@@ -553,6 +553,7 @@
   <button id="optSource">source</button>
   <button id="optColour">colour</button>
   <button id="optShare">share</button>
+  <button id="optProjects">other projects</button>
   <div class="opt-separator"></div>
   <div class="opt-footer">
     <a href="https://buymeacoffee.com/samiainstevens" target="_blank" rel="noopener">buy me a coffee</a><br>
@@ -629,6 +630,10 @@
   let wakeLockSentinel = null;
   let wakeLockRetryTimer = null;
   const supportsWakeLock = typeof navigator !== 'undefined' && 'wakeLock' in navigator;
+  const radialBandRange = { floor: 0, ceiling: 1, initialized: false };
+  const spectrumBandRange = { floor: 0, ceiling: 1, initialized: false };
+  const nightingaleBandRange = { floor: 0, ceiling: 1, initialized: false };
+  const fireworksHighBandRange = { floor: 0, ceiling: 1, initialized: false };
 
   // ── Visualisers ──
   const visualisers = [
@@ -932,6 +937,74 @@
     return ((1 - frac) * v0 + frac * v1) / 255;
   }
 
+  function getBandLevel(startT = 0, endT = 1, useBalanced = false) {
+    if (!freqArray || freqArray.length === 0) return 0;
+    const source = useBalanced && balancedFreqArray && balancedFreqArray.length === freqArray.length
+      ? balancedFreqArray
+      : freqArray;
+    const len = source.length;
+    const start = Math.max(0, Math.min(1, startT));
+    const end = Math.max(start, Math.min(1, endT));
+    const i0 = Math.floor(start * (len - 1));
+    const i1 = Math.max(i0, Math.floor(end * (len - 1)));
+    let sum = 0;
+    let count = 0;
+    for (let i = i0; i <= i1; i++) {
+      sum += source[i] || 0;
+      count++;
+    }
+    return count > 0 ? (sum / count) / 255 : 0;
+  }
+
+  function updateBandRange(rangeState, band = 1, useBalanced = true) {
+    if (!rangeState || !freqArray || freqArray.length === 0) return;
+    const source = useBalanced && balancedFreqArray && balancedFreqArray.length === freqArray.length
+      ? balancedFreqArray
+      : freqArray;
+    const clampedBand = Math.max(0.05, Math.min(1, band));
+    const maxIdx = Math.max(1, Math.floor(source.length * clampedBand) - 1);
+    let sum = 0;
+    let peak = 0;
+    for (let i = 0; i <= maxIdx; i++) {
+      const v = (source[i] || 0) / 255;
+      sum += v;
+      if (v > peak) peak = v;
+    }
+    const mean = sum / (maxIdx + 1);
+    const floorInstant = Math.min(0.45, mean * 0.34);
+    const ceilingInstant = Math.max(floorInstant + 0.08, peak * 0.94);
+    if (!rangeState.initialized) {
+      rangeState.floor = floorInstant;
+      rangeState.ceiling = ceilingInstant;
+      rangeState.initialized = true;
+      return;
+    }
+    rangeState.floor += (floorInstant - rangeState.floor) * 0.12;
+    const ceilingAlpha = ceilingInstant > rangeState.ceiling ? 0.22 : 0.09;
+    rangeState.ceiling += (ceilingInstant - rangeState.ceiling) * ceilingAlpha;
+    if (rangeState.ceiling < rangeState.floor + 0.06) {
+      rangeState.ceiling = rangeState.floor + 0.06;
+    }
+  }
+
+  function normalizeBandSample(value, t, rangeState) {
+    const clampedT = Math.max(0, Math.min(1, t));
+    if (!rangeState || !rangeState.initialized) return value;
+    const floor = rangeState.floor;
+    const ceiling = Math.max(floor + 0.06, rangeState.ceiling);
+    const span = Math.max(0.08, ceiling - floor);
+    let normalized = (value - floor) / span;
+    if (normalized <= 0) return 0;
+    normalized = Math.pow(Math.min(1, normalized), 0.9);
+    const highLift = 0.84 + Math.pow(clampedT, 0.9) * 0.24;
+    return Math.min(1, normalized * highLift);
+  }
+
+  function sampleFreqAdaptive(t, band = 1, gamma = 0.9, rangeState = null) {
+    const raw = sampleFreq(t, band, gamma);
+    return normalizeBandSample(raw, t, rangeState);
+  }
+
   function updatePointerFieldStrength() {
     let target = 0;
     if (pointerField.active) {
@@ -1229,8 +1302,10 @@
     const cy = h / 2;
     const radius = Math.min(w, h) * 0.25;
     const bars = 180;
+    const radialBand = 0.98;
     const baseHue = (Date.now() / 60) % 360;
     const level = getLevel();
+    updateBandRange(radialBandRange, radialBand, true);
 
     // Glow circle
     const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius + 100);
@@ -1242,7 +1317,8 @@
 
     for (let i = 0; i < bars; i++) {
       const angle = (i / bars) * Math.PI * 2 - Math.PI / 2 + radialRotation;
-      const val = sampleFreq(i / (bars - 1), 0.78, 0.9);
+      const t = bars <= 1 ? 0 : i / (bars - 1);
+      const val = sampleFreqAdaptive(t, radialBand, 0.84, radialBandRange);
       const len = val * radius * 1.2;
       const hue = (baseHue + i * 2) % 360;
       const lightness = lightMode ? 35 : 65;
@@ -1451,6 +1527,8 @@
     const maxRadius = Math.min(Math.max(0, Math.min(cx, cy) - 2), maxRadiusBase * radiusScale);
     const angleInset = (RADIAL_TAU / petals) * 0.08;
     const overallLevel = getLevel();
+    const nightingaleBand = 0.99;
+    updateBandRange(nightingaleBandRange, nightingaleBand, true);
 
     if (!nightingaleOuterSmoothed || nightingaleOuterSmoothed.length !== petals) {
       nightingaleOuterSmoothed = new Float32Array(petals);
@@ -1458,8 +1536,8 @@
       nightingaleLagBuffer = new Float32Array(petals);
       for (let i = 0; i < petals; i++) {
         const t = petals <= 1 ? 0 : i / (petals - 1);
-        const outerInit = sampleFreq(t, 0.8, 0.9);
-        const innerInit = sampleFreq((t + 0.16) % 1, 0.86, 0.88);
+        const outerInit = sampleFreqAdaptive(t, nightingaleBand, 0.85, nightingaleBandRange);
+        const innerInit = sampleFreqAdaptive((t + 0.16) % 1, nightingaleBand, 0.82, nightingaleBandRange);
         nightingaleOuterSmoothed[i] = outerInit;
         nightingaleInnerSmoothed[i] = innerInit * 0.65;
         nightingaleLagBuffer[i] = outerInit;
@@ -1467,8 +1545,8 @@
     } else {
       for (let i = 0; i < petals; i++) {
         const t = petals <= 1 ? 0 : i / (petals - 1);
-        const outerTarget = sampleFreq(t, 0.8, 0.9);
-        const innerBandTarget = sampleFreq((t + 0.16) % 1, 0.86, 0.88);
+        const outerTarget = sampleFreqAdaptive(t, nightingaleBand, 0.85, nightingaleBandRange);
+        const innerBandTarget = sampleFreqAdaptive((t + 0.16) % 1, nightingaleBand, 0.82, nightingaleBandRange);
         const delayedOuter = nightingaleLagBuffer[i];
 
         nightingaleOuterSmoothed[i] += (outerTarget - nightingaleOuterSmoothed[i]) * NIGHTINGALE_OUTER_SMOOTHING;
@@ -1634,6 +1712,8 @@
     const ringSpacing = lerp(24, 30, viewportT);
     const ringPulse = lerp(42, 50, viewportT);
     const baseHue = (Date.now() / 70) % 360;
+    const spectrumBand = 0.99;
+    updateBandRange(spectrumBandRange, spectrumBand, true);
 
     ctx.save();
     ctx.translate(cx, cy);
@@ -1647,7 +1727,7 @@
       for (let i = 0; i <= points; i++) {
         const angle = (i / points) * RADIAL_TAU - Math.PI / 2;
         const t = (i % points) / (points - 1);
-        const val = sampleFreq(t, 0.8, 0.88);
+        const val = sampleFreqAdaptive(t, spectrumBand, 0.83, spectrumBandRange);
         const rad = ringRadius + val * ringPulse * (1 - r * 0.15);
 
         const x = Math.cos(angle) * rad;
@@ -2219,14 +2299,25 @@
     ctx.fillRect(0, 0, w, h);
 
     const level = getLevel();
+    updateBandRange(fireworksHighBandRange, 1, true);
+    const highBandLevel = getBandLevel(0.58, 1, true);
+    const highBandDrive = normalizeBandSample(highBandLevel, 0.92, fireworksHighBandRange);
+    const highPeakDrive = Math.max(
+      sampleFreqAdaptive(0.72, 1, 0.82, fireworksHighBandRange),
+      sampleFreqAdaptive(0.86, 1, 0.78, fireworksHighBandRange),
+      sampleFreqAdaptive(0.96, 1, 0.74, fireworksHighBandRange)
+    );
+    const launchDrive = Math.max(level * 0.72, highBandLevel * 0.9, highBandDrive * 1.18, highPeakDrive * 1.1);
     fwCooldown--;
 
     // Launch fireworks gently
-    if (level > 0.03 && fwCooldown <= 0 && fireworkParticles.length < MAX_FW_PARTICLES - 30) {
+    if (launchDrive > 0.03 && fwCooldown <= 0 && fireworkParticles.length < MAX_FW_PARTICLES - 30) {
       const burstX = w * 0.2 + Math.random() * w * 0.6;
       const burstY = h * 0.15 + Math.random() * h * 0.4;
-      spawnFireworkBurst(burstX, burstY, level);
-      fwCooldown = 30 + Math.floor(Math.random() * 40);
+      const burstIntensity = Math.min(1, 0.4 + launchDrive * 0.9);
+      spawnFireworkBurst(burstX, burstY, burstIntensity);
+      const cooldownBias = 1 - Math.min(1, launchDrive * 1.35);
+      fwCooldown = 22 + Math.floor(cooldownBias * 34) + Math.floor(Math.random() * 20);
     }
 
     // Update & draw particles
@@ -2682,7 +2773,8 @@
     starfieldTouchDragging = true;
     starfieldTouchIdentifier = t.identifier;
     setStarfieldOriginFromClient(t.clientX, t.clientY);
-    suppressSwipeForTouchGesture = true;
+    // Allow quick (<0.5s) horizontal gestures to remain swipe-navigation.
+    suppressSwipeForTouchGesture = false;
     if (e.cancelable) e.preventDefault();
   }, { passive: false });
 
@@ -2698,6 +2790,10 @@
       }
     }
     if (!tracked) return;
+    if (touchStartTime && performance.now() - touchStartTime > MAX_SWIPE_GESTURE_MS) {
+      // Long gestures should behave like click-drag, not a swipe.
+      suppressSwipeForTouchGesture = true;
+    }
     setStarfieldOriginFromClient(tracked.clientX, tracked.clientY);
     activatePointerField(tracked.clientX, tracked.clientY);
     if (e.cancelable) e.preventDefault();
@@ -2946,6 +3042,14 @@
     }
   });
 
+  document.getElementById('optProjects').addEventListener('click', () => {
+    closeOptions();
+    const win = window.open('https://samiainstevens.github.io/myprojects/', '_blank', 'noopener');
+    if (!win) {
+      window.location.href = 'https://samiainstevens.github.io/myprojects/';
+    }
+  });
+
   function closeOptions() {
     optPanel.classList.remove('open');
     optBtn.classList.remove('open');
@@ -3094,6 +3198,18 @@
     nightingaleOuterSmoothed = null;
     nightingaleInnerSmoothed = null;
     nightingaleLagBuffer = null;
+    radialBandRange.floor = 0;
+    radialBandRange.ceiling = 1;
+    radialBandRange.initialized = false;
+    spectrumBandRange.floor = 0;
+    spectrumBandRange.ceiling = 1;
+    spectrumBandRange.initialized = false;
+    nightingaleBandRange.floor = 0;
+    nightingaleBandRange.ceiling = 1;
+    nightingaleBandRange.initialized = false;
+    fireworksHighBandRange.floor = 0;
+    fireworksHighBandRange.ceiling = 1;
+    fireworksHighBandRange.initialized = false;
     fireworkParticles = [];
     fwCooldown = 0;
     polyHistory = [];
