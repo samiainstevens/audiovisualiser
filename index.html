@@ -145,8 +145,27 @@
   .src-row {
     display: flex;
     gap: 16px;
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
+  }
+  .src-option {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+  }
+  .src-note {
+    display: none;
+    max-width: 120px;
+    text-align: center;
+    font-size: 10px;
+    line-height: 1.25;
+    letter-spacing: 0.2px;
+    color: var(--fg);
+    opacity: 0.45;
+  }
+  @media (pointer: coarse) {
+    .src-note.mobile-only { display: block; }
   }
 
   /* Visualiser picker (after audio connected) */
@@ -172,7 +191,7 @@
   }
   .pick-item {
     aspect-ratio: 1;
-    border-radius: 10px;
+    border-radius: 50%;
     border: none;
     background: var(--btn-bg);
     color: var(--fg);
@@ -183,6 +202,7 @@
     align-items: center;
     justify-content: center;
     text-align: center;
+    line-height: 1.15;
     padding: 10px;
     transition: background 0.2s, transform 0.1s;
   }
@@ -191,6 +211,7 @@
   .pick-random {
     grid-column: 1 / -1;
     aspect-ratio: auto;
+    border-radius: 999px;
     padding: 18px;
     font-size: 14px;
     letter-spacing: 0.3px;
@@ -338,6 +359,26 @@
   /* Hide controls briefly on idle */
   .controls-hidden #optBtn { opacity: 0 !important; transition: opacity 0.8s; }
   .controls-hidden #cursor { opacity: 0 !important; transition: opacity 0.8s; }
+  .controls-hidden #visNameHint { opacity: 0 !important; transition: opacity 0.8s; }
+
+  #visNameHint {
+    position: fixed;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%) translateY(-4px);
+    z-index: 120;
+    pointer-events: none;
+    color: var(--fg);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: lowercase;
+    opacity: 0;
+    transition: opacity 0.28s ease, transform 0.28s ease;
+  }
+  #visNameHint.show {
+    opacity: 0.62;
+    transform: translateX(-50%) translateY(0);
+  }
 
   /* Custom cursor */
   #cursor {
@@ -387,6 +428,7 @@
 
 <canvas id="c"></canvas>
 <div id="cursor"></div>
+<div id="visNameHint" aria-live="polite"></div>
 
 <!-- Options button -->
 <button id="optBtn" aria-label="Options"><span class="arrow">&#x276F;</span></button>
@@ -395,16 +437,15 @@
 <div id="optPanel">
   <button id="optFullscreen">fullscreen</button>
   <button id="optTheme">light mode</button>
-  <button id="optRandom">random visualiser</button>
-  <button id="optNext">next visualiser</button>
+  <button id="optNext">next</button>
   <button id="optMenu">menu</button>
-  <button id="optSource">change source</button>
-  <button id="optColour">change colour</button>
+  <button id="optSource">source</button>
+  <button id="optColour">colour</button>
   <button id="optShare">share</button>
   <div class="opt-separator"></div>
   <div class="opt-footer">
     <a href="https://buymeacoffee.com/samiainstevens" target="_blank" rel="noopener">buy me a coffee</a><br>
-    &copy; sam stevens 2026
+    <a href="https://www.samiainstevens.com" target="_blank" rel="noopener">&copy; sam stevens 2026</a>
   </div>
 </div>
 
@@ -412,8 +453,13 @@
 <div id="dialog">
   <span class="src-heading">choose audio source</span>
   <div class="src-row">
-    <button class="src-btn" id="btnMic">microphone</button>
-    <button class="src-btn" id="btnSystem">device sound</button>
+    <div class="src-option">
+      <button class="src-btn" id="btnMic">microphone</button>
+    </div>
+    <div class="src-option">
+      <button class="src-btn" id="btnSystem">device sound</button>
+      <span class="src-note mobile-only">may not work on mobile devices</span>
+    </div>
   </div>
 </div>
 
@@ -453,19 +499,19 @@
 
   // ── Visualisers ──
   const visualisers = [
-    { name: 'frequency bars', fn: drawBars },
+    { name: 'bars', fn: drawBars },
     { name: 'waveform', fn: drawWaveform },
     { name: 'radial', fn: drawRadial },
     { name: 'particles', fn: drawParticles },
-    { name: 'mirror bars', fn: drawMirrorBars },
-    { name: 'spectrum ring', fn: drawSpectrumRing },
+    { name: 'nightingale', fn: drawNightingale },
+    { name: 'spectrum', fn: drawSpectrumRing },
     { name: 'terrain', fn: drawTerrain },
     { name: 'starfield', fn: drawStarfield },
     { name: 'aurora', fn: drawAurora },
     { name: 'kaleidoscope', fn: drawKaleidoscope },
     { name: 'raindrops', fn: drawRaindrops },
     { name: 'swirls', fn: drawSwirls },
-    { name: 'dancing circles', fn: drawDancingCircles },
+    { name: 'circles', fn: drawDancingCircles },
     { name: 'fireworks', fn: drawFireworks },
     { name: 'polygraph', fn: drawPolygraph },
     { name: 'decibels', fn: drawDecibels },
@@ -473,7 +519,16 @@
 
   // ── Particle state ──
   let particles = [];
+  let particlesSpawnAccumulator = 0;
   const MAX_PARTICLES = 200;
+
+  // ── Bars state ──
+  let barsVariant = 0;
+  const BARS_VARIANT_COUNT = 4;
+  let barsSmoothed = null;
+  let mirrorBarsSmoothed = null;
+  const FREQ_BARS_SMOOTHING = 0.22;
+  const MIRROR_BARS_SMOOTHING = 0.2;
 
   // ── Terrain state ──
   let terrainHistory = [];
@@ -510,6 +565,10 @@
       if (mode === 'mic') {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       } else {
+        if (!navigator.mediaDevices || typeof navigator.mediaDevices.getDisplayMedia !== 'function') {
+          alert('device sound capture is not supported in this browser. try microphone instead.');
+          return;
+        }
         stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
         stream.getVideoTracks().forEach(t => t.stop());
         if (stream.getAudioTracks().length === 0) {
@@ -588,6 +647,22 @@
     return sum / freqArray.length / 255;
   }
 
+  // Weighted sampler for visual mappings.
+  // Uses mostly low/mid bins (where music energy usually lives) and interpolates
+  // between bins to avoid hard dead zones in specific sectors.
+  function sampleFreq(t, band = 0.5, gamma = 1.25) {
+    const clampedT = Math.max(0, Math.min(1, t));
+    const clampedBand = Math.max(0.05, Math.min(1, band));
+    const maxIdx = Math.max(1, Math.floor(freqArray.length * clampedBand) - 1);
+    const mapped = Math.pow(clampedT, gamma) * maxIdx;
+    const i0 = Math.floor(mapped);
+    const i1 = Math.min(maxIdx, i0 + 1);
+    const frac = mapped - i0;
+    const v0 = freqArray[i0] || 0;
+    const v1 = freqArray[i1] || v0;
+    return ((1 - frac) * v0 + frac * v1) / 255;
+  }
+
   // ── Helper: color based on mode ──
   function fg(alpha = 1) {
     return lightMode ? `rgba(20,20,20,${alpha})` : `rgba(230,230,230,${alpha})`;
@@ -609,22 +684,89 @@
   }
 
   // ═══════════════════════════════
-  //  VISUALISER 1: Frequency Bars
+  //  VISUALISER 1: Bars
   // ═══════════════════════════════
   function drawBars(w, h) {
+    const variant = barsVariant % BARS_VARIANT_COUNT;
+    if (variant >= 2) {
+      drawBarsMirror(w, h, variant === 3);
+      return;
+    }
+
     const bars = Math.min(128, freqArray.length);
     const barW = w / bars;
     const baseHue = (Date.now() / 50) % 360;
 
+    if (!barsSmoothed || barsSmoothed.length !== bars) {
+      barsSmoothed = new Float32Array(bars);
+      for (let i = 0; i < bars; i++) barsSmoothed[i] = freqArray[i] / 255;
+    } else {
+      for (let i = 0; i < bars; i++) {
+        const target = freqArray[i] / 255;
+        barsSmoothed[i] += (target - barsSmoothed[i]) * FREQ_BARS_SMOOTHING;
+      }
+    }
+
     for (let i = 0; i < bars; i++) {
-      const val = freqArray[i] / 255;
+      const val = barsSmoothed[i];
       const barH = val * h * 0.85;
       const hue = (baseHue + i * 2) % 360;
       const lightness = lightMode ? 35 : 60;
 
       ctx.fillStyle = hslColor(hue, 70, lightness, 0.8);
-      ctx.fillRect(i * barW, h - barH, barW - 1, barH);
+      const y = variant === 1 ? 0 : h - barH;
+      ctx.fillRect(i * barW, y, barW - 1, barH);
     }
+  }
+
+  function drawBarsMirror(w, h, vertical = true) {
+    const bars = Math.min(96, freqArray.length);
+    const cx = w / 2;
+    const cy = h / 2;
+    const baseHue = (Date.now() / 60) % 360;
+
+    if (!mirrorBarsSmoothed || mirrorBarsSmoothed.length !== bars) {
+      mirrorBarsSmoothed = new Float32Array(bars);
+      for (let i = 0; i < bars; i++) mirrorBarsSmoothed[i] = freqArray[i] / 255;
+    } else {
+      for (let i = 0; i < bars; i++) {
+        const target = freqArray[i] / 255;
+        mirrorBarsSmoothed[i] += (target - mirrorBarsSmoothed[i]) * MIRROR_BARS_SMOOTHING;
+      }
+    }
+
+    for (let i = 0; i < bars; i++) {
+      const val = mirrorBarsSmoothed[i];
+      const hue = (baseHue + i * 2.5) % 360;
+      const lightness = lightMode ? 35 : 60;
+
+      ctx.fillStyle = hslColor(hue, 65, lightness, 0.75);
+      if (vertical) {
+        const barW = w / bars;
+        const barH = val * h * 0.42;
+        ctx.fillRect(i * barW, cy - barH, barW - 1, barH);
+        ctx.fillStyle = hslColor(hue, 65, lightness, 0.4);
+        ctx.fillRect(i * barW, cy, barW - 1, barH);
+      } else {
+        const barH = h / bars;
+        const barLen = val * w * 0.42;
+        ctx.fillRect(cx - barLen, i * barH, barLen, barH - 1);
+        ctx.fillStyle = hslColor(hue, 65, lightness, 0.4);
+        ctx.fillRect(cx, i * barH, barLen, barH - 1);
+      }
+    }
+
+    ctx.beginPath();
+    if (vertical) {
+      ctx.moveTo(0, cy);
+      ctx.lineTo(w, cy);
+    } else {
+      ctx.moveTo(cx, 0);
+      ctx.lineTo(cx, h);
+    }
+    ctx.strokeStyle = fg(0.1);
+    ctx.lineWidth = 1;
+    ctx.stroke();
   }
 
   // ═══════════════════════════════
@@ -680,7 +822,7 @@
   const RADIAL_SPIN_ACCEL = 0.7;
   const RADIAL_SPIN_DECEL = RADIAL_SPIN_ACCEL;
   const RADIAL_TAU = Math.PI * 2;
-  const RADIAL_STOP_SNAP_CLICKS = 3;
+  const RADIAL_STOP_SNAP_CLICKS = 1;
 
   function updateRadialSpin() {
     const now = performance.now();
@@ -774,7 +916,6 @@
     const cy = h / 2;
     const radius = Math.min(w, h) * 0.25;
     const bars = 180;
-    const step = Math.floor(freqArray.length / bars);
     const baseHue = (Date.now() / 60) % 360;
     const level = getLevel();
 
@@ -788,7 +929,7 @@
 
     for (let i = 0; i < bars; i++) {
       const angle = (i / bars) * Math.PI * 2 - Math.PI / 2 + radialRotation;
-      const val = freqArray[i * step] / 255;
+      const val = sampleFreq(i / (bars - 1), 0.5, 1.35);
       const len = val * radius * 1.2;
       const hue = (baseHue + i * 2) % 360;
       const lightness = lightMode ? 35 : 65;
@@ -814,17 +955,21 @@
     const level = getLevel();
     const baseHue = (Date.now() / 50) % 360;
 
-    // Spawn particles based on audio level
-    const spawnCount = Math.floor(level * 8);
+    // Spawn steadily with an accumulator to avoid bursty flicker.
+    particlesSpawnAccumulator += 0.45 + level * 4.2;
+    let spawnCount = Math.floor(particlesSpawnAccumulator);
+    if (spawnCount > 0) particlesSpawnAccumulator -= spawnCount;
+    spawnCount = Math.min(spawnCount, 8);
+
     for (let i = 0; i < spawnCount && particles.length < MAX_PARTICLES; i++) {
       particles.push({
         x: Math.random() * w,
         y: Math.random() * h,
-        vx: (Math.random() - 0.5) * (3 + level * 8),
-        vy: (Math.random() - 0.5) * (3 + level * 8),
+        vx: (Math.random() - 0.5) * (1.6 + level * 4.2),
+        vy: (Math.random() - 0.5) * (1.6 + level * 4.2),
         life: 1,
-        decay: 0.003 + Math.random() * 0.008,
-        size: 4 + Math.random() * 8,
+        decay: 0.002 + Math.random() * 0.0035,
+        size: 5 + Math.random() * 7,
         hue: (baseHue + Math.random() * 60) % 360
       });
     }
@@ -834,14 +979,16 @@
     for (const p of particles) {
       p.x += p.vx;
       p.y += p.vy;
-      p.vx *= 0.99;
-      p.vy *= 0.99;
+      p.vx *= 0.992;
+      p.vy *= 0.992;
       p.life -= p.decay;
+      if (p.life <= 0) continue;
 
       const lightness = lightMode ? 35 : 65;
+      const radius = Math.max(0.8, p.size * (0.22 + p.life * 0.78));
       ctx.beginPath();
-      ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
-      ctx.fillStyle = hslColor(p.hue, 70, lightness, p.life * 0.8);
+      ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+      ctx.fillStyle = hslColor(p.hue, 70, lightness, 0.2 + p.life * 0.6);
       ctx.fill();
     }
 
@@ -865,62 +1012,313 @@
   }
 
   // ═══════════════════════════════
-  //  VISUALISER 5: Mirror Bars
+  //  VISUALISER 5: Nightingale
   // ═══════════════════════════════
-  function drawMirrorBars(w, h) {
-    const bars = Math.min(96, freqArray.length);
-    const barW = w / bars;
-    const cy = h / 2;
-    const baseHue = (Date.now() / 60) % 360;
+  let nightingaleRotation = 0;
+  let nightingaleSpinSpeed = 0;
+  let nightingaleSpinEnabled = false;
+  let nightingaleSpinStopping = false;
+  let nightingaleSpinStopAngle = null;
+  let nightingaleStopClickCount = 0;
+  let nightingaleLastUpdate = performance.now();
+  let nightingaleOuterSmoothed = null;
+  let nightingaleInnerSmoothed = null;
+  let nightingaleLagBuffer = null;
+  const NIGHTINGALE_OUTER_SMOOTHING = 0.18;
+  const NIGHTINGALE_INNER_SMOOTHING = 0.12;
 
-    for (let i = 0; i < bars; i++) {
-      const val = freqArray[i] / 255;
-      const barH = val * h * 0.42;
-      const hue = (baseHue + i * 2.5) % 360;
-      const lightness = lightMode ? 35 : 60;
+  function updateNightingaleSpin() {
+    const now = performance.now();
+    const dt = Math.min(0.05, Math.max(0.001, (now - nightingaleLastUpdate) / 1000));
+    nightingaleLastUpdate = now;
 
-      ctx.fillStyle = hslColor(hue, 65, lightness, 0.75);
-      // Top half
-      ctx.fillRect(i * barW, cy - barH, barW - 1, barH);
-      // Bottom half (mirror)
-      ctx.fillStyle = hslColor(hue, 65, lightness, 0.4);
-      ctx.fillRect(i * barW, cy, barW - 1, barH);
+    if (nightingaleSpinStopping && nightingaleSpinStopAngle !== null) {
+      const remaining = Math.max(0, nightingaleRotation - nightingaleSpinStopAngle);
+      if (remaining <= 0.0005) {
+        nightingaleRotation = nightingaleSpinStopAngle;
+        nightingaleSpinSpeed = 0;
+        nightingaleSpinEnabled = false;
+        nightingaleSpinStopping = false;
+        nightingaleSpinStopAngle = null;
+        nightingaleStopClickCount = 0;
+        return;
+      }
+
+      const decelDistance = (RADIAL_SPIN_MAX_SPEED * RADIAL_SPIN_MAX_SPEED) / (2 * RADIAL_SPIN_DECEL);
+      const desiredSpeed = remaining > decelDistance
+        ? RADIAL_SPIN_MAX_SPEED
+        : Math.sqrt(2 * RADIAL_SPIN_DECEL * remaining);
+
+      if (nightingaleSpinSpeed < desiredSpeed) {
+        nightingaleSpinSpeed = Math.min(desiredSpeed, nightingaleSpinSpeed + RADIAL_SPIN_ACCEL * dt);
+      } else if (nightingaleSpinSpeed > desiredSpeed) {
+        nightingaleSpinSpeed = Math.max(desiredSpeed, nightingaleSpinSpeed - RADIAL_SPIN_DECEL * dt);
+      }
+
+      nightingaleRotation -= nightingaleSpinSpeed * dt;
+      if (nightingaleRotation <= nightingaleSpinStopAngle + 0.0005) {
+        nightingaleRotation = nightingaleSpinStopAngle;
+        nightingaleSpinSpeed = 0;
+        nightingaleSpinEnabled = false;
+        nightingaleSpinStopping = false;
+        nightingaleSpinStopAngle = null;
+        nightingaleStopClickCount = 0;
+      }
+      return;
     }
 
-    // Center line
-    ctx.beginPath();
-    ctx.moveTo(0, cy);
-    ctx.lineTo(w, cy);
-    ctx.strokeStyle = fg(0.1);
-    ctx.lineWidth = 1;
-    ctx.stroke();
+    const desiredSpeed = nightingaleSpinEnabled ? RADIAL_SPIN_MAX_SPEED : 0;
+    if (nightingaleSpinSpeed < desiredSpeed) {
+      nightingaleSpinSpeed = Math.min(desiredSpeed, nightingaleSpinSpeed + RADIAL_SPIN_ACCEL * dt);
+    } else if (nightingaleSpinSpeed > desiredSpeed) {
+      nightingaleSpinSpeed = Math.max(desiredSpeed, nightingaleSpinSpeed - RADIAL_SPIN_DECEL * dt);
+    }
+
+    if (nightingaleSpinSpeed > 0.0001) {
+      nightingaleRotation -= nightingaleSpinSpeed * dt;
+    }
+  }
+
+  function toggleNightingaleSpin() {
+    nightingaleLastUpdate = performance.now();
+    if (!nightingaleSpinEnabled && !nightingaleSpinStopping && nightingaleSpinSpeed <= 0.001) {
+      nightingaleSpinEnabled = true;
+      nightingaleStopClickCount = 0;
+      return;
+    }
+    if (nightingaleSpinStopping) {
+      nightingaleStopClickCount++;
+      if (nightingaleStopClickCount >= RADIAL_STOP_SNAP_CLICKS) {
+        const snapAngle = nightingaleSpinStopAngle !== null
+          ? nightingaleSpinStopAngle
+          : Math.floor(nightingaleRotation / RADIAL_TAU) * RADIAL_TAU;
+        nightingaleRotation = snapAngle;
+        nightingaleSpinSpeed = 0;
+        nightingaleSpinEnabled = false;
+        nightingaleSpinStopping = false;
+        nightingaleSpinStopAngle = null;
+        nightingaleStopClickCount = 0;
+      }
+      return;
+    }
+
+    nightingaleSpinEnabled = false;
+    nightingaleSpinStopping = true;
+    nightingaleStopClickCount = 0;
+    nightingaleSpinStopAngle = Math.floor(nightingaleRotation / RADIAL_TAU) * RADIAL_TAU;
+    if (nightingaleSpinStopAngle >= nightingaleRotation - 0.0005) {
+      nightingaleSpinStopAngle -= RADIAL_TAU;
+    }
+  }
+
+  function drawNightingale(w, h) {
+    updateNightingaleSpin();
+
+    const cx = w / 2;
+    const cy = h / 2;
+    const baseHue = (Date.now() / 60) % 360;
+    const petals = 12;
+    const innerRadius = 0;
+    const maxRadius = Math.min(w, h) * 0.56;
+    const angleInset = (RADIAL_TAU / petals) * 0.08;
+    const overallLevel = getLevel();
+
+    if (!nightingaleOuterSmoothed || nightingaleOuterSmoothed.length !== petals) {
+      nightingaleOuterSmoothed = new Float32Array(petals);
+      nightingaleInnerSmoothed = new Float32Array(petals);
+      nightingaleLagBuffer = new Float32Array(petals);
+      for (let i = 0; i < petals; i++) {
+        const t = petals <= 1 ? 0 : i / (petals - 1);
+        const outerInit = sampleFreq(t, 0.52, 1.28);
+        const innerInit = sampleFreq((t + 0.16) % 1, 0.62, 1.1);
+        nightingaleOuterSmoothed[i] = outerInit;
+        nightingaleInnerSmoothed[i] = innerInit * 0.65;
+        nightingaleLagBuffer[i] = outerInit;
+      }
+    } else {
+      for (let i = 0; i < petals; i++) {
+        const t = petals <= 1 ? 0 : i / (petals - 1);
+        const outerTarget = sampleFreq(t, 0.52, 1.28);
+        const innerBandTarget = sampleFreq((t + 0.16) % 1, 0.62, 1.08);
+        const delayedOuter = nightingaleLagBuffer[i];
+
+        nightingaleOuterSmoothed[i] += (outerTarget - nightingaleOuterSmoothed[i]) * NIGHTINGALE_OUTER_SMOOTHING;
+        const innerTarget = Math.min(1, innerBandTarget * 0.62 + delayedOuter * 0.38);
+        nightingaleInnerSmoothed[i] += (innerTarget - nightingaleInnerSmoothed[i]) * NIGHTINGALE_INNER_SMOOTHING;
+        nightingaleLagBuffer[i] = nightingaleOuterSmoothed[i];
+      }
+    }
+
+    // In true silence, collapse values quickly so petals disappear entirely.
+    if (overallLevel < 0.004) {
+      for (let i = 0; i < petals; i++) {
+        nightingaleOuterSmoothed[i] *= 0.76;
+        nightingaleInnerSmoothed[i] *= 0.72;
+        nightingaleLagBuffer[i] *= 0.76;
+        if (nightingaleOuterSmoothed[i] < 0.001) nightingaleOuterSmoothed[i] = 0;
+        if (nightingaleInnerSmoothed[i] < 0.001) nightingaleInnerSmoothed[i] = 0;
+        if (nightingaleLagBuffer[i] < 0.001) nightingaleLagBuffer[i] = 0;
+      }
+    }
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(nightingaleRotation);
+
+    for (let i = 0; i < petals; i++) {
+      const val = nightingaleOuterSmoothed[i];
+      const innerVal = nightingaleInnerSmoothed[i];
+      const start = (i / petals) * RADIAL_TAU - Math.PI / 2 + angleInset;
+      const end = ((i + 1) / petals) * RADIAL_TAU - Math.PI / 2 - angleInset;
+      const outerRadius = innerRadius + val * (maxRadius - innerRadius);
+      const overlayBaseRadius = innerRadius + innerVal * (maxRadius - innerRadius) * 0.72;
+      const overlayRadius = Math.min(outerRadius * 0.86, overlayBaseRadius);
+      const hue = (baseHue + i * 10) % 360;
+      const lightness = lightMode ? 42 : 60;
+      if (outerRadius <= 0.35 && overlayRadius <= 0.28) continue;
+
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.arc(0, 0, outerRadius, start, end);
+      ctx.closePath();
+      ctx.fillStyle = hslColor(hue, 64, lightness, 0.24 + val * 0.62);
+      ctx.fill();
+
+      // Overlay a shorter segment to mimic a classic rose-chart layering.
+      if (overlayRadius > 0.25) {
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.arc(0, 0, overlayRadius, start, end);
+        ctx.closePath();
+        ctx.fillStyle = hslColor((hue + 10) % 360, 52, lightMode ? 34 : 68, 0.2 + val * 0.48);
+        ctx.fill();
+      }
+    }
+
+    ctx.restore();
   }
 
   // ═══════════════════════════════
-  //  VISUALISER 6: Spectrum Ring
+  //  VISUALISER 6: Spectrum
   // ═══════════════════════════════
+  let spectrumRotation = 0;
+  let spectrumSpinSpeed = 0;
+  let spectrumSpinEnabled = false;
+  let spectrumSpinStopping = false;
+  let spectrumSpinStopAngle = null;
+  let spectrumStopClickCount = 0;
+  let spectrumLastUpdate = performance.now();
+
+  function updateSpectrumSpin() {
+    const now = performance.now();
+    const dt = Math.min(0.05, Math.max(0.001, (now - spectrumLastUpdate) / 1000));
+    spectrumLastUpdate = now;
+
+    if (spectrumSpinStopping && spectrumSpinStopAngle !== null) {
+      const remaining = Math.max(0, spectrumRotation - spectrumSpinStopAngle);
+      if (remaining <= 0.0005) {
+        spectrumRotation = spectrumSpinStopAngle;
+        spectrumSpinSpeed = 0;
+        spectrumSpinEnabled = false;
+        spectrumSpinStopping = false;
+        spectrumSpinStopAngle = null;
+        spectrumStopClickCount = 0;
+        return;
+      }
+
+      const decelDistance = (RADIAL_SPIN_MAX_SPEED * RADIAL_SPIN_MAX_SPEED) / (2 * RADIAL_SPIN_DECEL);
+      const desiredSpeed = remaining > decelDistance
+        ? RADIAL_SPIN_MAX_SPEED
+        : Math.sqrt(2 * RADIAL_SPIN_DECEL * remaining);
+
+      if (spectrumSpinSpeed < desiredSpeed) {
+        spectrumSpinSpeed = Math.min(desiredSpeed, spectrumSpinSpeed + RADIAL_SPIN_ACCEL * dt);
+      } else if (spectrumSpinSpeed > desiredSpeed) {
+        spectrumSpinSpeed = Math.max(desiredSpeed, spectrumSpinSpeed - RADIAL_SPIN_DECEL * dt);
+      }
+
+      spectrumRotation -= spectrumSpinSpeed * dt;
+      if (spectrumRotation <= spectrumSpinStopAngle + 0.0005) {
+        spectrumRotation = spectrumSpinStopAngle;
+        spectrumSpinSpeed = 0;
+        spectrumSpinEnabled = false;
+        spectrumSpinStopping = false;
+        spectrumSpinStopAngle = null;
+        spectrumStopClickCount = 0;
+      }
+      return;
+    }
+
+    const desiredSpeed = spectrumSpinEnabled ? RADIAL_SPIN_MAX_SPEED : 0;
+    if (spectrumSpinSpeed < desiredSpeed) {
+      spectrumSpinSpeed = Math.min(desiredSpeed, spectrumSpinSpeed + RADIAL_SPIN_ACCEL * dt);
+    } else if (spectrumSpinSpeed > desiredSpeed) {
+      spectrumSpinSpeed = Math.max(desiredSpeed, spectrumSpinSpeed - RADIAL_SPIN_DECEL * dt);
+    }
+
+    if (spectrumSpinSpeed > 0.0001) {
+      spectrumRotation -= spectrumSpinSpeed * dt;
+    }
+  }
+
+  function toggleSpectrumSpin() {
+    spectrumLastUpdate = performance.now();
+    if (!spectrumSpinEnabled && !spectrumSpinStopping && spectrumSpinSpeed <= 0.001) {
+      spectrumSpinEnabled = true;
+      spectrumStopClickCount = 0;
+      return;
+    }
+    if (spectrumSpinStopping) {
+      spectrumStopClickCount++;
+      if (spectrumStopClickCount >= RADIAL_STOP_SNAP_CLICKS) {
+        const snapAngle = spectrumSpinStopAngle !== null
+          ? spectrumSpinStopAngle
+          : Math.floor(spectrumRotation / RADIAL_TAU) * RADIAL_TAU;
+        spectrumRotation = snapAngle;
+        spectrumSpinSpeed = 0;
+        spectrumSpinEnabled = false;
+        spectrumSpinStopping = false;
+        spectrumSpinStopAngle = null;
+        spectrumStopClickCount = 0;
+      }
+      return;
+    }
+
+    spectrumSpinEnabled = false;
+    spectrumSpinStopping = true;
+    spectrumStopClickCount = 0;
+    spectrumSpinStopAngle = Math.floor(spectrumRotation / RADIAL_TAU) * RADIAL_TAU;
+    if (spectrumSpinStopAngle >= spectrumRotation - 0.0005) {
+      spectrumSpinStopAngle -= RADIAL_TAU;
+    }
+  }
+
   function drawSpectrumRing(w, h) {
+    updateSpectrumSpin();
+
     const cx = w / 2;
     const cy = h / 2;
     const baseRadius = Math.min(w, h) * 0.2;
     const rings = 5;
     const baseHue = (Date.now() / 70) % 360;
-    const level = getLevel();
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(spectrumRotation);
 
     for (let r = 0; r < rings; r++) {
       const ringRadius = baseRadius + r * 30;
       const points = 128;
-      const step = Math.floor(freqArray.length / points);
 
       ctx.beginPath();
       for (let i = 0; i <= points; i++) {
-        const angle = (i / points) * Math.PI * 2 - Math.PI / 2;
-        const idx = (i % points) * step;
-        const val = freqArray[idx] / 255;
+        const angle = (i / points) * RADIAL_TAU - Math.PI / 2;
+        const t = (i % points) / (points - 1);
+        const val = sampleFreq(t, 0.52, 1.3);
         const rad = ringRadius + val * 50 * (1 - r * 0.15);
 
-        const x = cx + Math.cos(angle) * rad;
-        const y = cy + Math.sin(angle) * rad;
+        const x = Math.cos(angle) * rad;
+        const y = Math.sin(angle) * rad;
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       }
@@ -932,6 +1330,8 @@
       ctx.lineWidth = 2 - r * 0.2;
       ctx.stroke();
     }
+
+    ctx.restore();
   }
 
   // ═══════════════════════════════
@@ -943,9 +1343,9 @@
     if (terrainFrameCount % 3 === 0) {
       const snapshot = [];
       const points = 100;
-      const step = Math.max(1, Math.floor(freqArray.length / points));
       for (let i = 0; i < points; i++) {
-        snapshot.push(freqArray[i * step] / 255);
+        const t = points <= 1 ? 0 : i / (points - 1);
+        snapshot.push(sampleFreq(t, 0.58, 1.22));
       }
       terrainHistory.unshift(snapshot);
       if (terrainHistory.length > TERRAIN_ROWS) terrainHistory.pop();
@@ -1084,7 +1484,100 @@
   //  VISUALISER 10: Kaleidoscope
   // ═══════════════════════════════
   let kaleidoTime = 0;
+  let kaleidoRotation = 0;
+  let kaleidoSpinSpeed = 0;
+  let kaleidoSpinEnabled = false;
+  let kaleidoSpinStopping = false;
+  let kaleidoSpinStopAngle = null;
+  let kaleidoStopClickCount = 0;
+  let kaleidoLastUpdate = performance.now();
+
+  function updateKaleidoSpin() {
+    const now = performance.now();
+    const dt = Math.min(0.05, Math.max(0.001, (now - kaleidoLastUpdate) / 1000));
+    kaleidoLastUpdate = now;
+
+    if (kaleidoSpinStopping && kaleidoSpinStopAngle !== null) {
+      const remaining = Math.max(0, kaleidoRotation - kaleidoSpinStopAngle);
+      if (remaining <= 0.0005) {
+        kaleidoRotation = kaleidoSpinStopAngle;
+        kaleidoSpinSpeed = 0;
+        kaleidoSpinEnabled = false;
+        kaleidoSpinStopping = false;
+        kaleidoSpinStopAngle = null;
+        kaleidoStopClickCount = 0;
+        return;
+      }
+
+      const decelDistance = (RADIAL_SPIN_MAX_SPEED * RADIAL_SPIN_MAX_SPEED) / (2 * RADIAL_SPIN_DECEL);
+      const desiredSpeed = remaining > decelDistance
+        ? RADIAL_SPIN_MAX_SPEED
+        : Math.sqrt(2 * RADIAL_SPIN_DECEL * remaining);
+
+      if (kaleidoSpinSpeed < desiredSpeed) {
+        kaleidoSpinSpeed = Math.min(desiredSpeed, kaleidoSpinSpeed + RADIAL_SPIN_ACCEL * dt);
+      } else if (kaleidoSpinSpeed > desiredSpeed) {
+        kaleidoSpinSpeed = Math.max(desiredSpeed, kaleidoSpinSpeed - RADIAL_SPIN_DECEL * dt);
+      }
+
+      kaleidoRotation -= kaleidoSpinSpeed * dt;
+      if (kaleidoRotation <= kaleidoSpinStopAngle + 0.0005) {
+        kaleidoRotation = kaleidoSpinStopAngle;
+        kaleidoSpinSpeed = 0;
+        kaleidoSpinEnabled = false;
+        kaleidoSpinStopping = false;
+        kaleidoSpinStopAngle = null;
+        kaleidoStopClickCount = 0;
+      }
+      return;
+    }
+
+    const desiredSpeed = kaleidoSpinEnabled ? RADIAL_SPIN_MAX_SPEED : 0;
+    if (kaleidoSpinSpeed < desiredSpeed) {
+      kaleidoSpinSpeed = Math.min(desiredSpeed, kaleidoSpinSpeed + RADIAL_SPIN_ACCEL * dt);
+    } else if (kaleidoSpinSpeed > desiredSpeed) {
+      kaleidoSpinSpeed = Math.max(desiredSpeed, kaleidoSpinSpeed - RADIAL_SPIN_DECEL * dt);
+    }
+
+    if (kaleidoSpinSpeed > 0.0001) {
+      kaleidoRotation -= kaleidoSpinSpeed * dt;
+    }
+  }
+
+  function toggleKaleidoSpin() {
+    kaleidoLastUpdate = performance.now();
+    if (!kaleidoSpinEnabled && !kaleidoSpinStopping && kaleidoSpinSpeed <= 0.001) {
+      kaleidoSpinEnabled = true;
+      kaleidoStopClickCount = 0;
+      return;
+    }
+    if (kaleidoSpinStopping) {
+      kaleidoStopClickCount++;
+      if (kaleidoStopClickCount >= RADIAL_STOP_SNAP_CLICKS) {
+        const snapAngle = kaleidoSpinStopAngle !== null
+          ? kaleidoSpinStopAngle
+          : Math.floor(kaleidoRotation / RADIAL_TAU) * RADIAL_TAU;
+        kaleidoRotation = snapAngle;
+        kaleidoSpinSpeed = 0;
+        kaleidoSpinEnabled = false;
+        kaleidoSpinStopping = false;
+        kaleidoSpinStopAngle = null;
+        kaleidoStopClickCount = 0;
+      }
+      return;
+    }
+
+    kaleidoSpinEnabled = false;
+    kaleidoSpinStopping = true;
+    kaleidoStopClickCount = 0;
+    kaleidoSpinStopAngle = Math.floor(kaleidoRotation / RADIAL_TAU) * RADIAL_TAU;
+    if (kaleidoSpinStopAngle >= kaleidoRotation - 0.0005) {
+      kaleidoSpinStopAngle -= RADIAL_TAU;
+    }
+  }
+
   function drawKaleidoscope(w, h) {
+    updateKaleidoSpin();
     kaleidoTime += 0.008;
     const cx = w / 2;
     const cy = h / 2;
@@ -1095,6 +1588,7 @@
 
     ctx.save();
     ctx.translate(cx, cy);
+    ctx.rotate(kaleidoRotation);
 
     for (let s = 0; s < segments; s++) {
       ctx.save();
@@ -1129,6 +1623,30 @@
   // ═══════════════════════════════
   let raindrops = [];
   const MAX_RAINDROPS = 40;
+  function getCanvasPoint(clientX, clientY) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: clientX - rect.left,
+      y: clientY - rect.top
+    };
+  }
+  function spawnRaindropBurst(x, y, intensity = 0.8, countOverride = null) {
+    const clamped = Math.max(0, Math.min(1, intensity));
+    const baseHue = (Date.now() / 90) % 360;
+    const count = countOverride === null ? 3 + Math.floor(clamped * 4) : Math.max(1, Math.floor(countOverride));
+    for (let i = 0; i < count; i++) {
+      if (raindrops.length >= MAX_RAINDROPS) raindrops.shift();
+      raindrops.push({
+        x: x + (Math.random() - 0.5) * 28,
+        y: y + (Math.random() - 0.5) * 28,
+        radius: 0,
+        maxRadius: 95 + Math.random() * 145 + clamped * 85,
+        speed: 0.6 + Math.random() * 1.0,
+        hue: (baseHue + Math.random() * 60) % 360,
+        life: 1
+      });
+    }
+  }
   function drawRaindrops(w, h) {
     const level = getLevel();
     const baseHue = (Date.now() / 90) % 360;
@@ -1174,8 +1692,9 @@
   //  VISUALISER 12: Swirls
   // ═══════════════════════════════
   let swirlTime = 0;
+  let swirlDirection = 1;
   function drawSwirls(w, h) {
-    swirlTime += 0.006;
+    swirlTime += 0.006 * swirlDirection;
     const cx = w / 2;
     const cy = h / 2;
     const level = getLevel();
@@ -1267,41 +1786,49 @@
   let fwCooldown = 0;
   const MAX_FW_PARTICLES = 300;
   const FIREWORK_TRAIL_LENGTH_FACTOR = 1.2;
+  function spawnFireworkBurst(burstX, burstY, intensity = 0.7) {
+    const clamped = Math.max(0, Math.min(1, intensity));
+    const room = MAX_FW_PARTICLES - fireworkParticles.length;
+    if (room <= 0) return;
+
+    const baseHue = (Date.now() / 120) % 360;
+    const burstHue = (baseHue + Math.random() * 120) % 360;
+    const count = Math.min(room, 12 + Math.floor(clamped * 18));
+
+    for (let i = 0; i < count; i++) {
+      const angle = (i / count) * Math.PI * 2 + Math.random() * 0.2;
+      const speed = 0.4 + Math.random() * 1.0 + clamped * 1.2;
+      fireworkParticles.push({
+        x: burstX,
+        y: burstY,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        life: 1,
+        decay: (0.002 + Math.random() * 0.005) / FIREWORK_TRAIL_LENGTH_FACTOR,
+        size: 1.5 + Math.random() * 2,
+        hue: (burstHue + Math.random() * 30) % 360,
+        gravity: 0.005 + Math.random() * 0.008
+      });
+    }
+  }
   function drawFireworks(w, h) {
-    // Fade toward the mode background and clear harder as bursts die down.
+    // Fade toward the mode background and aggressively clean low-activity residue.
     const activeFactor = Math.min(1, fireworkParticles.length / 120);
-    const fadeAlpha = 0.08 + (1 - activeFactor) * 0.06;
+    const idleFactor = Math.min(1, Math.max(0, 1 - fireworkParticles.length / 18));
+    const fadeAlpha = Math.min(0.3, 0.1 + (1 - activeFactor) * 0.1 + idleFactor * 0.08);
     ctx.fillStyle = lightMode
       ? `rgba(245,245,245,${fadeAlpha})`
       : `rgba(0,0,0,${fadeAlpha})`;
     ctx.fillRect(0, 0, w, h);
 
     const level = getLevel();
-    const baseHue = (Date.now() / 120) % 360;
     fwCooldown--;
 
     // Launch fireworks gently
     if (level > 0.03 && fwCooldown <= 0 && fireworkParticles.length < MAX_FW_PARTICLES - 30) {
       const burstX = w * 0.2 + Math.random() * w * 0.6;
       const burstY = h * 0.15 + Math.random() * h * 0.4;
-      const burstHue = (baseHue + Math.random() * 120) % 360;
-      const count = 12 + Math.floor(level * 18);
-
-      for (let i = 0; i < count; i++) {
-        const angle = (i / count) * Math.PI * 2 + Math.random() * 0.2;
-        const speed = 0.4 + Math.random() * 1.0 + level * 1.2;
-        fireworkParticles.push({
-          x: burstX,
-          y: burstY,
-          vx: Math.cos(angle) * speed,
-          vy: Math.sin(angle) * speed,
-          life: 1,
-          decay: (0.002 + Math.random() * 0.005) / FIREWORK_TRAIL_LENGTH_FACTOR,
-          size: 1.5 + Math.random() * 2,
-          hue: (burstHue + Math.random() * 30) % 360,
-          gravity: 0.005 + Math.random() * 0.008
-        });
-      }
+      spawnFireworkBurst(burstX, burstY, level);
       fwCooldown = 30 + Math.floor(Math.random() * 40);
     }
 
@@ -1329,6 +1856,7 @@
   //  VISUALISER 15: Polygraph
   // ═══════════════════════════════
   let polyHistory = [];
+  let polygraphShowBackground = false;
   const POLY_MAX_POINTS = 800;
   function drawPolygraph(w, h) {
     const level = getLevel();
@@ -1346,34 +1874,36 @@
 
     const baseHue = (Date.now() / 100) % 360;
     const lightness = lightMode ? 30 : 70;
-    const margin = 40;
-    const graphW = w - margin * 2;
+    const graphX = 0;
+    const graphW = w;
     const graphH = h * 0.6;
     const graphY = h * 0.2;
 
-    // Grid lines
-    ctx.strokeStyle = fg(0.06);
-    ctx.lineWidth = 1;
-    for (let i = 0; i <= 8; i++) {
-      const y = graphY + (i / 8) * graphH;
-      ctx.beginPath();
-      ctx.moveTo(margin, y);
-      ctx.lineTo(w - margin, y);
-      ctx.stroke();
-    }
-    for (let i = 0; i <= 10; i++) {
-      const x = margin + (i / 10) * graphW;
-      ctx.beginPath();
-      ctx.moveTo(x, graphY);
-      ctx.lineTo(x, graphY + graphH);
-      ctx.stroke();
+    if (polygraphShowBackground) {
+      // Grid lines
+      ctx.strokeStyle = fg(0.06);
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 8; i++) {
+        const y = graphY + (i / 8) * graphH;
+        ctx.beginPath();
+        ctx.moveTo(graphX, y);
+        ctx.lineTo(graphX + graphW, y);
+        ctx.stroke();
+      }
+      for (let i = 0; i <= 10; i++) {
+        const x = graphX + (i / 10) * graphW;
+        ctx.beginPath();
+        ctx.moveTo(x, graphY);
+        ctx.lineTo(x, graphY + graphH);
+        ctx.stroke();
+      }
     }
 
     // Draw the polygraph line
     if (polyHistory.length > 1) {
       ctx.beginPath();
       for (let i = 0; i < polyHistory.length; i++) {
-        const x = margin + (i / POLY_MAX_POINTS) * graphW;
+        const x = graphX + (i / POLY_MAX_POINTS) * graphW;
         const val = Math.min(polyHistory[i] * 3, 1);
         const y = graphY + graphH - val * graphH;
         if (i === 0) ctx.moveTo(x, y);
@@ -1383,20 +1913,23 @@
       ctx.lineWidth = 2;
       ctx.stroke();
 
-      // Filled area under curve
-      const lastX = margin + ((polyHistory.length - 1) / POLY_MAX_POINTS) * graphW;
-      ctx.lineTo(lastX, graphY + graphH);
-      ctx.lineTo(margin, graphY + graphH);
-      ctx.closePath();
-      ctx.fillStyle = hslColor(baseHue, 50, lightness, 0.06);
-      ctx.fill();
+      if (polygraphShowBackground) {
+        // Filled area under curve
+        const lastX = graphX + ((polyHistory.length - 1) / POLY_MAX_POINTS) * graphW;
+        ctx.lineTo(lastX, graphY + graphH);
+        ctx.lineTo(graphX, graphY + graphH);
+        ctx.closePath();
+        ctx.fillStyle = hslColor(baseHue, 50, lightness, 0.06);
+        ctx.fill();
+      }
     }
 
     // Current level indicator on right
     const curVal = Math.min(rms * 3, 1);
     const indicatorY = graphY + graphH - curVal * graphH;
+    const indicatorX = Math.min(graphX + graphW, graphX + (polyHistory.length / POLY_MAX_POINTS) * graphW);
     ctx.beginPath();
-    ctx.arc(margin + (polyHistory.length / POLY_MAX_POINTS) * graphW, indicatorY, 4 + level * 4, 0, Math.PI * 2);
+    ctx.arc(indicatorX, indicatorY, 4 + level * 4, 0, Math.PI * 2);
     ctx.fillStyle = hslColor(baseHue, 60, lightness, 0.9);
     ctx.fill();
   }
@@ -1562,7 +2095,18 @@
   // Options toggle
   const optBtn = document.getElementById('optBtn');
   const optPanel = document.getElementById('optPanel');
+  const visNameHint = document.getElementById('visNameHint');
   const RADIAL_CLICK_EXCLUSION = 30;
+  let visNameHintTimer = null;
+
+  function showVisNameHint(text = visualisers[currentVis].name) {
+    visNameHint.textContent = text;
+    visNameHint.classList.add('show');
+    clearTimeout(visNameHintTimer);
+    visNameHintTimer = setTimeout(() => {
+      visNameHint.classList.remove('show');
+    }, 1000);
+  }
 
   function isNearOptionsButton(x, y) {
     const rect = optBtn.getBoundingClientRect();
@@ -1574,7 +2118,6 @@
 
   canvas.addEventListener('click', (e) => {
     if (!running) return;
-    if (visualisers[currentVis].name !== 'radial') return;
     if (isNearOptionsButton(e.clientX, e.clientY)) return;
     if (optPanel.classList.contains('open')) return;
     if (!visPicker.classList.contains('hidden')) return;
@@ -1585,7 +2128,28 @@
     if (document.getElementById('menuOverlay').classList.contains('open')) return;
     if (document.getElementById('colourOverlay').classList.contains('open')) return;
 
-    toggleRadialSpin();
+    const mode = visualisers[currentVis].name;
+    if (mode === 'bars') {
+      barsVariant = (barsVariant + 1) % BARS_VARIANT_COUNT;
+    } else if (mode === 'nightingale') {
+      toggleNightingaleSpin();
+    } else if (mode === 'radial') {
+      toggleRadialSpin();
+    } else if (mode === 'spectrum') {
+      toggleSpectrumSpin();
+    } else if (mode === 'kaleidoscope') {
+      toggleKaleidoSpin();
+    } else if (mode === 'polygraph') {
+      polygraphShowBackground = !polygraphShowBackground;
+    } else if (mode === 'fireworks') {
+      const p = getCanvasPoint(e.clientX, e.clientY);
+      spawnFireworkBurst(p.x, p.y, 0.75);
+    } else if (mode === 'raindrops') {
+      const p = getCanvasPoint(e.clientX, e.clientY);
+      spawnRaindropBurst(p.x, p.y, 1, 1);
+    } else if (mode === 'swirls') {
+      swirlDirection *= -1;
+    }
   });
 
   optBtn.addEventListener('click', (e) => {
@@ -1620,16 +2184,11 @@
     closeOptions();
   });
 
-  // Random visualiser
-  document.getElementById('optRandom').addEventListener('click', () => {
-    currentVis = Math.floor(Math.random() * visualisers.length);
-    resetVisState();
-  });
-
   // Next visualiser
   document.getElementById('optNext').addEventListener('click', () => {
     currentVis = (currentVis + 1) % visualisers.length;
     resetVisState();
+    showVisNameHint();
   });
 
   // Menu button
@@ -1750,14 +2309,26 @@
 
   function resetVisState() {
     particles = [];
+    particlesSpawnAccumulator = 0;
     wfSmoothed = null;
+    barsSmoothed = null;
+    mirrorBarsSmoothed = null;
+    barsVariant = 0;
     terrainHistory = [];
     terrainFrameCount = 0;
     initStars();
     auroraTime = 0;
     kaleidoTime = 0;
+    kaleidoRotation = 0;
+    kaleidoSpinSpeed = 0;
+    kaleidoSpinEnabled = false;
+    kaleidoSpinStopping = false;
+    kaleidoSpinStopAngle = null;
+    kaleidoStopClickCount = 0;
+    kaleidoLastUpdate = performance.now();
     raindrops = [];
     swirlTime = 0;
+    swirlDirection = 1;
     circleTime = 0;
     radialRotation = 0;
     radialSpinSpeed = 0;
@@ -1766,12 +2337,32 @@
     radialSpinStopAngle = null;
     radialStopClickCount = 0;
     radialLastUpdate = performance.now();
+    spectrumRotation = 0;
+    spectrumSpinSpeed = 0;
+    spectrumSpinEnabled = false;
+    spectrumSpinStopping = false;
+    spectrumSpinStopAngle = null;
+    spectrumStopClickCount = 0;
+    spectrumLastUpdate = performance.now();
+    nightingaleRotation = 0;
+    nightingaleSpinSpeed = 0;
+    nightingaleSpinEnabled = false;
+    nightingaleSpinStopping = false;
+    nightingaleSpinStopAngle = null;
+    nightingaleStopClickCount = 0;
+    nightingaleLastUpdate = performance.now();
+    nightingaleOuterSmoothed = null;
+    nightingaleInnerSmoothed = null;
+    nightingaleLagBuffer = null;
     fireworkParticles = [];
     fwCooldown = 0;
     polyHistory = [];
+    polygraphShowBackground = false;
     dbHistory = [];
     peakDb = -100;
     peakHold = 0;
+    clearTimeout(visNameHintTimer);
+    visNameHint.classList.remove('show');
 
     // Always clear canvas fully on visualiser switch
     ctx.clearRect(0, 0, canvas.width, canvas.height);
