@@ -221,19 +221,28 @@
   }
   .menu-item {
     aspect-ratio: 1;
-    border-radius: 12px;
+    border-radius: 50%;
     border: none;
     background: var(--btn-bg);
     color: var(--fg);
-    font-size: 13px;
+    font-size: 12px;
     font-family: inherit;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
     text-align: center;
+    line-height: 1.15;
     padding: 12px;
     transition: background 0.2s;
+  }
+  .menu-item.menu-random {
+    grid-column: 1 / -1;
+    aspect-ratio: auto;
+    border-radius: 999px;
+    padding: 16px 24px;
+    font-size: 13px;
+    letter-spacing: 0.3px;
   }
   .menu-item:hover { background: var(--btn-hover); }
   .menu-item.active { background: var(--btn-hover); }
@@ -356,7 +365,10 @@
     background: var(--fg);
     border-radius: 50%;
     opacity: 0.7;
+    transform: scale(1);
+    transition: transform 0.14s ease;
   }
+  #cursor.clicking::after { transform: scale(1.65); }
 
   @media (max-width: 480px) {
     #optPanel { right: 8px; top: 60px; }
@@ -391,7 +403,7 @@
   <button id="optShare">share</button>
   <div class="opt-separator"></div>
   <div class="opt-footer">
-    <a href="https://buymeacoffee.com/samstevens" target="_blank" rel="noopener">buy me a coffee</a><br>
+    <a href="https://buymeacoffee.com/samiainstevens" target="_blank" rel="noopener">buy me a coffee</a><br>
     &copy; sam stevens 2026
   </div>
 </div>
@@ -657,7 +669,107 @@
   // ═══════════════════════════════
   //  VISUALISER 3: Radial
   // ═══════════════════════════════
+  let radialRotation = 0;
+  let radialSpinSpeed = 0;
+  let radialSpinEnabled = false;
+  let radialSpinStopping = false;
+  let radialSpinStopAngle = null;
+  let radialStopClickCount = 0;
+  let radialLastUpdate = performance.now();
+  const RADIAL_SPIN_MAX_SPEED = 0.72;
+  const RADIAL_SPIN_ACCEL = 0.7;
+  const RADIAL_SPIN_DECEL = RADIAL_SPIN_ACCEL;
+  const RADIAL_TAU = Math.PI * 2;
+  const RADIAL_STOP_SNAP_CLICKS = 3;
+
+  function updateRadialSpin() {
+    const now = performance.now();
+    const dt = Math.min(0.05, Math.max(0.001, (now - radialLastUpdate) / 1000));
+    radialLastUpdate = now;
+
+    if (radialSpinStopping && radialSpinStopAngle !== null) {
+      const remaining = Math.max(0, radialRotation - radialSpinStopAngle);
+      if (remaining <= 0.0005) {
+        radialRotation = radialSpinStopAngle;
+        radialSpinSpeed = 0;
+        radialSpinEnabled = false;
+        radialSpinStopping = false;
+        radialSpinStopAngle = null;
+        radialStopClickCount = 0;
+        return;
+      }
+
+      const decelDistance = (RADIAL_SPIN_MAX_SPEED * RADIAL_SPIN_MAX_SPEED) / (2 * RADIAL_SPIN_DECEL);
+      const desiredSpeed = remaining > decelDistance
+        ? RADIAL_SPIN_MAX_SPEED
+        : Math.sqrt(2 * RADIAL_SPIN_DECEL * remaining);
+
+      if (radialSpinSpeed < desiredSpeed) {
+        radialSpinSpeed = Math.min(desiredSpeed, radialSpinSpeed + RADIAL_SPIN_ACCEL * dt);
+      } else if (radialSpinSpeed > desiredSpeed) {
+        radialSpinSpeed = Math.max(desiredSpeed, radialSpinSpeed - RADIAL_SPIN_DECEL * dt);
+      }
+
+      radialRotation -= radialSpinSpeed * dt;
+      if (radialRotation <= radialSpinStopAngle + 0.0005) {
+        radialRotation = radialSpinStopAngle;
+        radialSpinSpeed = 0;
+        radialSpinEnabled = false;
+        radialSpinStopping = false;
+        radialSpinStopAngle = null;
+        radialStopClickCount = 0;
+      }
+      return;
+    }
+
+    const desiredSpeed = radialSpinEnabled ? RADIAL_SPIN_MAX_SPEED : 0;
+    if (radialSpinSpeed < desiredSpeed) {
+      radialSpinSpeed = Math.min(desiredSpeed, radialSpinSpeed + RADIAL_SPIN_ACCEL * dt);
+    } else if (radialSpinSpeed > desiredSpeed) {
+      radialSpinSpeed = Math.max(desiredSpeed, radialSpinSpeed - RADIAL_SPIN_DECEL * dt);
+    }
+
+    if (radialSpinSpeed > 0.0001) {
+      radialRotation -= radialSpinSpeed * dt;
+    }
+  }
+
+  function toggleRadialSpin() {
+    radialLastUpdate = performance.now();
+    if (!radialSpinEnabled && !radialSpinStopping && radialSpinSpeed <= 0.001) {
+      radialSpinEnabled = true;
+      radialStopClickCount = 0;
+      return;
+    }
+    if (radialSpinStopping) {
+      radialStopClickCount++;
+      if (radialStopClickCount >= RADIAL_STOP_SNAP_CLICKS) {
+        const snapAngle = radialSpinStopAngle !== null
+          ? radialSpinStopAngle
+          : Math.floor(radialRotation / RADIAL_TAU) * RADIAL_TAU;
+        radialRotation = snapAngle;
+        radialSpinSpeed = 0;
+        radialSpinEnabled = false;
+        radialSpinStopping = false;
+        radialSpinStopAngle = null;
+        radialStopClickCount = 0;
+      }
+      return;
+    }
+
+    radialSpinEnabled = false;
+    radialSpinStopping = true;
+    radialStopClickCount = 0;
+    // Stop at the next completed full turn (<= 1 additional rotation).
+    radialSpinStopAngle = Math.floor(radialRotation / RADIAL_TAU) * RADIAL_TAU;
+    if (radialSpinStopAngle >= radialRotation - 0.0005) {
+      radialSpinStopAngle -= RADIAL_TAU;
+    }
+  }
+
   function drawRadial(w, h) {
+    updateRadialSpin();
+
     const cx = w / 2;
     const cy = h / 2;
     const radius = Math.min(w, h) * 0.25;
@@ -675,7 +787,7 @@
     ctx.fillRect(0, 0, w, h);
 
     for (let i = 0; i < bars; i++) {
-      const angle = (i / bars) * Math.PI * 2 - Math.PI / 2;
+      const angle = (i / bars) * Math.PI * 2 - Math.PI / 2 + radialRotation;
       const val = freqArray[i * step] / 255;
       const len = val * radius * 1.2;
       const hue = (baseHue + i * 2) % 360;
@@ -1154,10 +1266,14 @@
   let fireworkParticles = [];
   let fwCooldown = 0;
   const MAX_FW_PARTICLES = 300;
+  const FIREWORK_TRAIL_LENGTH_FACTOR = 1.2;
   function drawFireworks(w, h) {
-    // Fade previous frame instead of clearing — smooth trails, no flicker
-    // Lower alpha for longer fade and darken overlay for less brightness
-    ctx.fillStyle = lightMode ? 'rgba(180,180,180,0.05)' : 'rgba(6,6,6,0.05)';
+    // Fade toward the mode background and clear harder as bursts die down.
+    const activeFactor = Math.min(1, fireworkParticles.length / 120);
+    const fadeAlpha = 0.08 + (1 - activeFactor) * 0.06;
+    ctx.fillStyle = lightMode
+      ? `rgba(245,245,245,${fadeAlpha})`
+      : `rgba(0,0,0,${fadeAlpha})`;
     ctx.fillRect(0, 0, w, h);
 
     const level = getLevel();
@@ -1180,7 +1296,7 @@
           vx: Math.cos(angle) * speed,
           vy: Math.sin(angle) * speed,
           life: 1,
-          decay: 0.002 + Math.random() * 0.005,
+          decay: (0.002 + Math.random() * 0.005) / FIREWORK_TRAIL_LENGTH_FACTOR,
           size: 1.5 + Math.random() * 2,
           hue: (burstHue + Math.random() * 30) % 360,
           gravity: 0.005 + Math.random() * 0.008
@@ -1446,6 +1562,31 @@
   // Options toggle
   const optBtn = document.getElementById('optBtn');
   const optPanel = document.getElementById('optPanel');
+  const RADIAL_CLICK_EXCLUSION = 30;
+
+  function isNearOptionsButton(x, y) {
+    const rect = optBtn.getBoundingClientRect();
+    return x >= rect.left - RADIAL_CLICK_EXCLUSION &&
+      x <= rect.right + RADIAL_CLICK_EXCLUSION &&
+      y >= rect.top - RADIAL_CLICK_EXCLUSION &&
+      y <= rect.bottom + RADIAL_CLICK_EXCLUSION;
+  }
+
+  canvas.addEventListener('click', (e) => {
+    if (!running) return;
+    if (visualisers[currentVis].name !== 'radial') return;
+    if (isNearOptionsButton(e.clientX, e.clientY)) return;
+    if (optPanel.classList.contains('open')) return;
+    if (!visPicker.classList.contains('hidden')) return;
+
+    const dialogEl = document.getElementById('dialog');
+    if (!dialogEl.classList.contains('hidden')) return;
+
+    if (document.getElementById('menuOverlay').classList.contains('open')) return;
+    if (document.getElementById('colourOverlay').classList.contains('open')) return;
+
+    toggleRadialSpin();
+  });
 
   optBtn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -1575,11 +1716,8 @@
     menuGrid.innerHTML = '';
     // Random button
     const randBtn = document.createElement('button');
-    randBtn.className = 'menu-item';
+    randBtn.className = 'menu-item menu-random';
     randBtn.textContent = 'random';
-    randBtn.style.gridColumn = '1 / -1';
-    randBtn.style.aspectRatio = 'auto';
-    randBtn.style.padding = '16px';
     randBtn.addEventListener('click', () => {
       currentVis = Math.floor(Math.random() * visualisers.length);
       resetVisState();
@@ -1621,6 +1759,13 @@
     raindrops = [];
     swirlTime = 0;
     circleTime = 0;
+    radialRotation = 0;
+    radialSpinSpeed = 0;
+    radialSpinEnabled = false;
+    radialSpinStopping = false;
+    radialSpinStopAngle = null;
+    radialStopClickCount = 0;
+    radialLastUpdate = performance.now();
     fireworkParticles = [];
     fwCooldown = 0;
     polyHistory = [];
@@ -1663,7 +1808,13 @@
       cursorEl.style.display = 'block';
       if (windowHasMouse) resetIdle();
     });
-    document.addEventListener('mouseleave', () => { cursorEl.style.display = 'none'; });
+    document.addEventListener('mousedown', () => { cursorEl.classList.add('clicking'); });
+    document.addEventListener('mouseup', () => { cursorEl.classList.remove('clicking'); });
+    window.addEventListener('blur', () => { cursorEl.classList.remove('clicking'); });
+    document.addEventListener('mouseleave', () => {
+      cursorEl.style.display = 'none';
+      cursorEl.classList.remove('clicking');
+    });
   }
   document.addEventListener('touchstart', resetIdle, { passive: true });
   resetIdle();
