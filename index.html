@@ -117,6 +117,19 @@
     transition: opacity 0.4s;
   }
   #dialog.hidden { opacity: 0; pointer-events: none; }
+  #dialog .src-heading,
+  #dialog .src-row {
+    transition: opacity 0.2s ease, transform 0.2s ease;
+  }
+  #dialog.sensitivity-adjusting .src-heading,
+  #dialog.sensitivity-adjusting .src-row {
+    opacity: 0;
+    transform: translateY(-2px);
+    pointer-events: none;
+  }
+  #dialog.sensitivity-adjusting {
+    background: transparent;
+  }
   .src-heading {
     font-size: 13px;
     color: var(--fg);
@@ -154,9 +167,59 @@
     align-items: center;
     gap: 8px;
   }
+  #sensitivityControl {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    width: min(240px, 72vw);
+    margin-top: -8px;
+  }
+  #sensitivityControl.show { display: flex; }
+  .sensitivity-label {
+    font-size: 13px;
+    color: var(--fg);
+    opacity: 0.4;
+    letter-spacing: 0.5px;
+    font-weight: 400;
+    text-transform: none;
+    user-select: none;
+    cursor: pointer;
+  }
+  #sensitivitySlider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 2px;
+    border-radius: 999px;
+    background: var(--btn-hover);
+    outline: none;
+    opacity: 0.75;
+  }
+  #sensitivitySlider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--fg);
+    border: 0;
+  }
+  #sensitivitySlider::-moz-range-thumb {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--fg);
+    border: 0;
+  }
+  #sensitivitySlider::-moz-range-track {
+    height: 2px;
+    border-radius: 999px;
+    background: var(--btn-hover);
+  }
   .src-note {
     display: none;
-    max-width: 120px;
+    max-width: 100px;
     text-align: center;
     font-size: 10px;
     line-height: 1.25;
@@ -461,6 +524,10 @@
       <span class="src-note mobile-only">may not work on mobile devices</span>
     </div>
   </div>
+  <div id="sensitivityControl" aria-label="sensitivity control">
+    <span id="sensitivityLabel" class="sensitivity-label" role="button" tabindex="0">sensitivity</span>
+    <input id="sensitivitySlider" type="range" min="0" max="1" step="0.01" value="0.5">
+  </div>
 </div>
 
 <!-- Visualiser picker -->
@@ -488,14 +555,32 @@
   // ── State ──
   const canvas = document.getElementById('c');
   const ctx = canvas.getContext('2d');
+  const menuOverlay = document.getElementById('menuOverlay');
+  const colourOverlay = document.getElementById('colourOverlay');
   let audioCtx, analyser, dataArray, freqArray, source, currentStream;
+  let balancedFreqArray;
   let currentVis = 0;
   let running = false;
   let changingSource = false;
   let lightMode = false;
   let colourMode = 'rainbow';
+  let sensitivity = 1;
   let idleTimer, controlsHidden = false;
   const fftSize = 2048;
+  const SENSITIVITY_MIN = 0.5;
+  const DEFAULT_SENSITIVITY = 1;
+  const SENSITIVITY_MAX = 2.2;
+  const SENSITIVITY_UI_DEFAULT = 0.5;
+  const pointerField = {
+    x: 0,
+    y: 0,
+    active: false,
+    strength: 0,
+    touchPointerId: null
+  };
+  let wakeLockSentinel = null;
+  let wakeLockRetryTimer = null;
+  const supportsWakeLock = typeof navigator !== 'undefined' && 'wakeLock' in navigator;
 
   // ── Visualisers ──
   const visualisers = [
@@ -511,7 +596,7 @@
     { name: 'kaleidoscope', fn: drawKaleidoscope },
     { name: 'raindrops', fn: drawRaindrops },
     { name: 'swirls', fn: drawSwirls },
-    { name: 'circles', fn: drawDancingCircles },
+    { name: 'fog', fn: drawDancingCircles },
     { name: 'fireworks', fn: drawFireworks },
     { name: 'polygraph', fn: drawPolygraph },
     { name: 'decibels', fn: drawDecibels },
@@ -538,6 +623,16 @@
   // ── Starfield state ──
   let stars = [];
   const NUM_STARS = 300;
+  let starfieldOriginX = null;
+  let starfieldOriginY = null;
+  let starfieldMouseFollow = false;
+  let starfieldTouchDragging = false;
+  let starfieldTouchPointerId = null;
+  let starfieldReturnActive = false;
+  let starfieldReturnStart = 0;
+  let starfieldReturnFromX = 0;
+  let starfieldReturnFromY = 0;
+  const STARFIELD_RETURN_DURATION_MS = 500;
   function initStars() {
     stars = [];
     for (let i = 0; i < NUM_STARS; i++) {
@@ -549,6 +644,89 @@
     }
   }
   initStars();
+
+  function ensureStarfieldOrigin(w, h) {
+    if (Number.isFinite(starfieldOriginX) && Number.isFinite(starfieldOriginY)) return;
+    starfieldOriginX = w / 2;
+    starfieldOriginY = h / 2;
+  }
+
+  function setStarfieldOriginFromClient(clientX, clientY) {
+    const p = getCanvasPoint(clientX, clientY);
+    starfieldOriginX = p.x;
+    starfieldOriginY = p.y;
+    starfieldReturnActive = false;
+  }
+
+  function beginStarfieldReturn() {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    ensureStarfieldOrigin(w, h);
+    starfieldReturnFromX = starfieldOriginX;
+    starfieldReturnFromY = starfieldOriginY;
+    starfieldReturnStart = performance.now();
+    starfieldReturnActive = true;
+  }
+
+  function stopStarfieldTouchDrag(pointerId = null) {
+    if (!starfieldTouchDragging) return;
+    if (pointerId !== null && pointerId !== starfieldTouchPointerId) return;
+    starfieldTouchDragging = false;
+    starfieldTouchPointerId = null;
+    beginStarfieldReturn();
+  }
+
+  function updateStarfieldOrigin(w, h) {
+    ensureStarfieldOrigin(w, h);
+    if (starfieldMouseFollow || starfieldTouchDragging) return;
+    if (!starfieldReturnActive) return;
+    const t = Math.min(1, (performance.now() - starfieldReturnStart) / STARFIELD_RETURN_DURATION_MS);
+    const easeOut = 1 - Math.pow(1 - t, 3);
+    const cx = w / 2;
+    const cy = h / 2;
+    starfieldOriginX = starfieldReturnFromX + (cx - starfieldReturnFromX) * easeOut;
+    starfieldOriginY = starfieldReturnFromY + (cy - starfieldReturnFromY) * easeOut;
+    if (t >= 1) {
+      starfieldOriginX = cx;
+      starfieldOriginY = cy;
+      starfieldReturnActive = false;
+    }
+  }
+
+  async function requestWakeLock() {
+    if (!running) return;
+    if (document.visibilityState !== 'visible') return;
+    if (!supportsWakeLock || wakeLockSentinel) return;
+    try {
+      wakeLockSentinel = await navigator.wakeLock.request('screen');
+      wakeLockSentinel.addEventListener('release', () => {
+        wakeLockSentinel = null;
+        if (wakeLockRetryTimer) {
+          clearTimeout(wakeLockRetryTimer);
+          wakeLockRetryTimer = null;
+        }
+        // Try to restore lock if browser/OS releases it unexpectedly.
+        if (running && document.visibilityState === 'visible') {
+          wakeLockRetryTimer = setTimeout(() => {
+            wakeLockRetryTimer = null;
+            requestWakeLock();
+          }, 250);
+        }
+      }, { once: true });
+    } catch (_) {
+      // Wake lock can fail due to browser/device constraints; fail silently.
+    }
+  }
+
+  function releaseWakeLock() {
+    if (wakeLockRetryTimer) {
+      clearTimeout(wakeLockRetryTimer);
+      wakeLockRetryTimer = null;
+    }
+    if (!wakeLockSentinel) return;
+    wakeLockSentinel.release().catch(() => {});
+    wakeLockSentinel = null;
+  }
 
   // ── Audio Setup ──
   async function initAudio(mode) {
@@ -588,13 +766,16 @@
 
       dataArray = new Uint8Array(analyser.frequencyBinCount);
       freqArray = new Uint8Array(analyser.frequencyBinCount);
+      balancedFreqArray = new Float32Array(analyser.frequencyBinCount);
 
       document.getElementById('dialog').classList.add('hidden');
 
       // If changing source, skip picker and go straight back to visualiser
       if (changingSource) {
         changingSource = false;
+        updateSensitivityControlVisibility();
         if (!running) { running = true; resize(); animate(); }
+        requestWakeLock();
       } else {
         // Show visualiser picker
         showVisPicker();
@@ -604,6 +785,7 @@
       if (changingSource) {
         changingSource = false;
         document.getElementById('dialog').classList.add('hidden');
+        updateSensitivityControlVisibility();
       }
       if (e.name !== 'NotAllowedError') {
         alert('could not access audio: ' + e.message);
@@ -624,12 +806,44 @@
   function animate() {
     if (!running) return;
     requestAnimationFrame(animate);
+    if (!analyser || !dataArray || !freqArray) return;
 
     analyser.getByteTimeDomainData(dataArray);
     analyser.getByteFrequencyData(freqArray);
+    if (Math.abs(sensitivity - 1) > 0.001) {
+      const gain = sensitivity;
+      for (let i = 0; i < freqArray.length; i++) {
+        const boosted = freqArray[i] * gain;
+        freqArray[i] = boosted > 255 ? 255 : boosted;
+      }
+      for (let i = 0; i < dataArray.length; i++) {
+        const shifted = (dataArray[i] - 128) * gain + 128;
+        dataArray[i] = shifted < 0 ? 0 : shifted > 255 ? 255 : shifted;
+      }
+    }
+
+    if (!balancedFreqArray || balancedFreqArray.length !== freqArray.length) {
+      balancedFreqArray = new Float32Array(freqArray.length);
+    }
+    const last = Math.max(1, freqArray.length - 1);
+    for (let i = 0; i < freqArray.length; i++) {
+      const pos = i / last;
+      const iL1 = i > 0 ? i - 1 : i;
+      const iR1 = i < last ? i + 1 : i;
+      const iL2 = i > 1 ? i - 2 : iL1;
+      const iR2 = i < last - 1 ? i + 2 : iR1;
+      const c = (freqArray[i] || 0) / 255;
+      const n1 = ((freqArray[iL1] || 0) + (freqArray[iR1] || 0)) / (255 * 2);
+      const n2 = ((freqArray[iL2] || 0) + (freqArray[iR2] || 0)) / (255 * 2);
+      const blended = Math.min(1, c * 0.56 + n1 * 0.3 + n2 * 0.14);
+      const shaped = Math.pow(blended, 0.92);
+      const eqGain = 0.58 + Math.pow(pos, 0.88) * 2.1;
+      balancedFreqArray[i] = Math.min(255, shaped * eqGain * 255);
+    }
 
     const w = window.innerWidth;
     const h = window.innerHeight;
+    updatePointerFieldStrength();
 
     // Fireworks uses its own fade-overlay; skip full clear for it
     if (visualisers[currentVis].name !== 'fireworks') {
@@ -648,19 +862,34 @@
   }
 
   // Weighted sampler for visual mappings.
-  // Uses mostly low/mid bins (where music energy usually lives) and interpolates
-  // between bins to avoid hard dead zones in specific sectors.
-  function sampleFreq(t, band = 0.5, gamma = 1.25) {
+  // Uses an equalized frequency view to avoid heavy start-weighting.
+  function sampleFreq(t, band = 0.78, gamma = 0.9) {
     const clampedT = Math.max(0, Math.min(1, t));
     const clampedBand = Math.max(0.05, Math.min(1, band));
     const maxIdx = Math.max(1, Math.floor(freqArray.length * clampedBand) - 1);
-    const mapped = Math.pow(clampedT, gamma) * maxIdx;
+    const effectiveGamma = Math.max(0.75, gamma * 1.15);
+    const mapped = Math.pow(clampedT, effectiveGamma) * maxIdx;
     const i0 = Math.floor(mapped);
     const i1 = Math.min(maxIdx, i0 + 1);
     const frac = mapped - i0;
-    const v0 = freqArray[i0] || 0;
-    const v1 = freqArray[i1] || v0;
+    const source = balancedFreqArray || freqArray;
+    const v0 = source[i0] || 0;
+    const v1 = source[i1] || v0;
     return ((1 - frac) * v0 + frac * v1) / 255;
+  }
+
+  function updatePointerFieldStrength() {
+    let target = 0;
+    if (pointerField.active) {
+      const rect = canvas.getBoundingClientRect();
+      const clientX = rect.left + pointerField.x;
+      const clientY = rect.top + pointerField.y;
+      target = canUseCanvasInteraction(clientX, clientY) ? 1 : 0;
+    }
+    pointerField.strength += (target - pointerField.strength) * 0.14;
+    if (target === 0 && pointerField.strength < 0.001) {
+      pointerField.strength = 0;
+    }
   }
 
   // ── Helper: color based on mode ──
@@ -681,6 +910,24 @@
       return `hsla(${fixedHue},${Math.min(s, 55)}%,${Math.max(l, 65)}%,${a})`;
     }
     return `hsla(${h},${s}%,${l}%,${a})`;
+  }
+
+  function roundedRectPath(x, y, width, height, radius) {
+    if (typeof ctx.roundRect === 'function') {
+      ctx.roundRect(x, y, width, height, radius);
+      return;
+    }
+    const r = Math.max(0, Math.min(radius, width / 2, height / 2));
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + width - r, y);
+    ctx.arcTo(x + width, y, x + width, y + r, r);
+    ctx.lineTo(x + width, y + height - r);
+    ctx.arcTo(x + width, y + height, x + width - r, y + height, r);
+    ctx.lineTo(x + r, y + height);
+    ctx.arcTo(x, y + height, x, y + height - r, r);
+    ctx.lineTo(x, y + r);
+    ctx.arcTo(x, y, x + r, y, r);
+    ctx.closePath();
   }
 
   // ═══════════════════════════════
@@ -773,6 +1020,7 @@
   //  VISUALISER 2: Waveform
   // ═══════════════════════════════
   let wfSmoothed = null;
+  let waveformVertical = false;
   function drawWaveform(w, h) {
     const baseHue = (Date.now() / 120) % 360;
 
@@ -791,6 +1039,7 @@
     for (let layer = 0; layer < 3; layer++) {
       ctx.beginPath();
       const sliceW = w / (dataArray.length / step);
+      const sliceH = h / (dataArray.length / step);
       const offset = layer * 0.1;
       const hue = (baseHue + layer * 40) % 360;
       const lightness = lightMode ? 40 : 65;
@@ -799,8 +1048,8 @@
 
       for (let i = 0; i < dataArray.length; i += step) {
         const v = (wfSmoothed[i] / 128.0) - 1 + offset;
-        const y = (v * h * 0.3) + h / 2;
-        const x = (i / step) * sliceW;
+        const x = waveformVertical ? (v * w * 0.3) + w / 2 : (i / step) * sliceW;
+        const y = waveformVertical ? (i / step) * sliceH : (v * h * 0.3) + h / 2;
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       }
@@ -929,7 +1178,7 @@
 
     for (let i = 0; i < bars; i++) {
       const angle = (i / bars) * Math.PI * 2 - Math.PI / 2 + radialRotation;
-      const val = sampleFreq(i / (bars - 1), 0.5, 1.35);
+      const val = sampleFreq(i / (bars - 1), 0.78, 0.9);
       const len = val * radius * 1.2;
       const hue = (baseHue + i * 2) % 360;
       const lightness = lightMode ? 35 : 65;
@@ -1119,7 +1368,7 @@
     const baseHue = (Date.now() / 60) % 360;
     const petals = 12;
     const innerRadius = 0;
-    const maxRadius = Math.min(w, h) * 0.56;
+    const maxRadius = Math.max(0, Math.min(cx, cy) - Math.max(8, Math.min(w, h) * 0.04));
     const angleInset = (RADIAL_TAU / petals) * 0.08;
     const overallLevel = getLevel();
 
@@ -1129,8 +1378,8 @@
       nightingaleLagBuffer = new Float32Array(petals);
       for (let i = 0; i < petals; i++) {
         const t = petals <= 1 ? 0 : i / (petals - 1);
-        const outerInit = sampleFreq(t, 0.52, 1.28);
-        const innerInit = sampleFreq((t + 0.16) % 1, 0.62, 1.1);
+        const outerInit = sampleFreq(t, 0.8, 0.9);
+        const innerInit = sampleFreq((t + 0.16) % 1, 0.86, 0.88);
         nightingaleOuterSmoothed[i] = outerInit;
         nightingaleInnerSmoothed[i] = innerInit * 0.65;
         nightingaleLagBuffer[i] = outerInit;
@@ -1138,8 +1387,8 @@
     } else {
       for (let i = 0; i < petals; i++) {
         const t = petals <= 1 ? 0 : i / (petals - 1);
-        const outerTarget = sampleFreq(t, 0.52, 1.28);
-        const innerBandTarget = sampleFreq((t + 0.16) % 1, 0.62, 1.08);
+        const outerTarget = sampleFreq(t, 0.8, 0.9);
+        const innerBandTarget = sampleFreq((t + 0.16) % 1, 0.86, 0.88);
         const delayedOuter = nightingaleLagBuffer[i];
 
         nightingaleOuterSmoothed[i] += (outerTarget - nightingaleOuterSmoothed[i]) * NIGHTINGALE_OUTER_SMOOTHING;
@@ -1314,7 +1563,7 @@
       for (let i = 0; i <= points; i++) {
         const angle = (i / points) * RADIAL_TAU - Math.PI / 2;
         const t = (i % points) / (points - 1);
-        const val = sampleFreq(t, 0.52, 1.3);
+        const val = sampleFreq(t, 0.8, 0.88);
         const rad = ringRadius + val * 50 * (1 - r * 0.15);
 
         const x = Math.cos(angle) * rad;
@@ -1345,7 +1594,7 @@
       const points = 100;
       for (let i = 0; i < points; i++) {
         const t = points <= 1 ? 0 : i / (points - 1);
-        snapshot.push(sampleFreq(t, 0.58, 1.22));
+        snapshot.push(sampleFreq(t, 0.82, 0.88));
       }
       terrainHistory.unshift(snapshot);
       if (terrainHistory.length > TERRAIN_ROWS) terrainHistory.pop();
@@ -1380,8 +1629,9 @@
   //  VISUALISER 8: Starfield
   // ═══════════════════════════════
   function drawStarfield(w, h) {
-    const cx = w / 2;
-    const cy = h / 2;
+    updateStarfieldOrigin(w, h);
+    const cx = starfieldOriginX;
+    const cy = starfieldOriginY;
     const level = getLevel();
     const speed = 0.002 + level * 0.06;
     const baseHue = (Date.now() / 70) % 360;
@@ -1430,12 +1680,20 @@
     const level = getLevel();
     const baseHue = (Date.now() / 80) % 360;
     const bands = 6;
+    const pointerStrength = pointerField.strength;
+    const pointerY = pointerField.y;
+    const pointerBandRadiusY = Math.max(60, h * 0.11);
 
     for (let b = 0; b < bands; b++) {
       const bandY = h * (0.2 + b * 0.12);
       const hue = (baseHue + b * 45) % 360;
       const lightness = lightMode ? 45 : 55;
       const alpha = 0.15 + level * 0.25;
+      const bandHover = pointerStrength > 0.001
+        ? Math.max(0, 1 - Math.abs(bandY - pointerY) / pointerBandRadiusY) * pointerStrength
+        : 0;
+      const dipOffset = bandHover * Math.max(12, h * 0.03);
+      const bandAlpha = alpha * (1 - bandHover * 0.75);
 
       ctx.beginPath();
       ctx.moveTo(0, bandY);
@@ -1448,7 +1706,9 @@
         const wave1 = Math.sin(auroraTime * 2 + i * 0.05 + b * 1.2) * 30;
         const wave2 = Math.sin(auroraTime * 1.3 + i * 0.03 + b * 0.8) * 20;
         const audioDisplace = freqVal * h * 0.08;
-        const y = bandY + wave1 + wave2 - audioDisplace;
+        let displacement = wave1 + wave2 - audioDisplace;
+        if (bandHover > 0.001) displacement *= 1 - bandHover * 0.98;
+        const y = bandY + dipOffset + displacement;
         ctx.lineTo(x, y);
       }
 
@@ -1458,8 +1718,8 @@
 
       const grad = ctx.createLinearGradient(0, bandY - 60, 0, bandY + 100);
       grad.addColorStop(0, hslColor(hue, 70, lightness, 0));
-      grad.addColorStop(0.3, hslColor(hue, 70, lightness, alpha * 0.7));
-      grad.addColorStop(0.6, hslColor((hue + 30) % 360, 60, lightness, alpha * 0.4));
+      grad.addColorStop(0.3, hslColor(hue, 70, lightness, bandAlpha * 0.7));
+      grad.addColorStop(0.6, hslColor((hue + 30) % 360, 60, lightness, bandAlpha * 0.4));
       grad.addColorStop(1, hslColor(hue, 70, lightness, 0));
       ctx.fillStyle = grad;
       ctx.fill();
@@ -1730,52 +1990,93 @@
   }
 
   // ═══════════════════════════════
-  //  VISUALISER 13: Dancing Circles
+  //  VISUALISER 13: Fog
   // ═══════════════════════════════
-  let circleTime = 0;
+  let fogCircles = [];
+  let fogCirclesW = 0;
+  let fogCirclesH = 0;
+
+  function initFogCircles(w, h) {
+    const area = w * h;
+    const count = Math.max(24, Math.min(56, Math.round(area / 42000)));
+    const baseSize = Math.min(w, h);
+
+    fogCircles = Array.from({ length: count }, () => ({
+      x: Math.random() * w,
+      y: Math.random() * h,
+      vx: (Math.random() - 0.5) * 0.22,
+      vy: (Math.random() - 0.5) * 0.22,
+      driftPhase: Math.random() * RADIAL_TAU,
+      pulsePhase: Math.random() * RADIAL_TAU,
+      pulseSpeed: 0.004 + Math.random() * 0.009,
+      baseRadius: baseSize * (0.025 + Math.random() * 0.055),
+      hueOffset: Math.random() * 120,
+      freqT: Math.random() * 0.95
+    }));
+    fogCirclesW = w;
+    fogCirclesH = h;
+  }
+
+  function ensureFogCircles(w, h) {
+    if (!fogCircles.length) {
+      initFogCircles(w, h);
+      return;
+    }
+    if (Math.abs(w - fogCirclesW) > 48 || Math.abs(h - fogCirclesH) > 48) {
+      initFogCircles(w, h);
+    }
+  }
+
   function drawDancingCircles(w, h) {
-    circleTime += 0.01;
+    ensureFogCircles(w, h);
+
     const level = getLevel();
-    const baseHue = (Date.now() / 60) % 360;
-    const numCircles = 24;
+    const baseHue = (Date.now() / 90) % 360;
+    const lightness = lightMode ? 46 : 60;
+    const pointerStrength = pointerField.strength;
+    const repelRadius = Math.max(120, Math.min(w, h) * 0.24);
 
-    for (let i = 0; i < numCircles; i++) {
-      const t = i / numCircles;
-      const freqIdx = Math.floor(t * freqArray.length * 0.6);
-      const val = freqArray[freqIdx] / 255;
+    for (const c of fogCircles) {
+      const audioVal = sampleFreq(c.freqT, 0.82, 0.88);
+      c.pulsePhase += c.pulseSpeed * (0.9 + level * 0.55);
+      c.driftPhase += 0.003 + audioVal * 0.012;
 
-      // Distribute circles across the screen with gentle motion
-      const gridX = (i % 6) / 5;
-      const gridY = Math.floor(i / 6) / 3;
-      const baseX = w * 0.1 + gridX * w * 0.8;
-      const baseY = h * 0.15 + gridY * h * 0.7;
+      const pulse = Math.pow((Math.sin(c.pulsePhase) + 1) * 0.5, 1.65);
+      const radius = c.baseRadius * pulse * (0.76 + audioVal * 0.34);
+      if (radius < 0.75) continue;
 
-      const wobbleX = Math.sin(circleTime * 1.5 + i * 0.7) * (20 + val * 30);
-      const wobbleY = Math.cos(circleTime * 1.2 + i * 0.9) * (15 + val * 25);
+      c.x += c.vx + Math.cos(c.driftPhase) * 0.05 + (audioVal - 0.4) * 0.08;
+      c.y += c.vy + Math.sin(c.driftPhase * 0.9) * 0.05;
 
-      const x = baseX + wobbleX;
-      const y = baseY + wobbleY;
-      const radius = 15 + val * 50 + Math.sin(circleTime + i) * 10;
-      const hue = (baseHue + i * 15) % 360;
-      const lightness = lightMode ? 45 : 58;
-      const alpha = 0.15 + val * 0.45;
+      if (pointerStrength > 0.001) {
+        const dx = c.x - pointerField.x;
+        const dy = c.y - pointerField.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist > 0.0001 && dist < repelRadius) {
+          const falloff = 1 - dist / repelRadius;
+          const push = falloff * falloff * pointerStrength * (0.66 + audioVal * 0.56);
+          c.x += (dx / dist) * push;
+          c.y += (dy / dist) * push;
+        }
+      }
 
-      // Filled circle with gradient
-      const grad = ctx.createRadialGradient(x, y, 0, x, y, radius);
-      grad.addColorStop(0, hslColor(hue, 65, lightness, alpha));
-      grad.addColorStop(0.7, hslColor(hue, 65, lightness, alpha * 0.4));
-      grad.addColorStop(1, hslColor(hue, 65, lightness, 0));
+      const wrap = radius * 1.35 + 18;
+      if (c.x < -wrap) c.x = w + wrap;
+      else if (c.x > w + wrap) c.x = -wrap;
+      if (c.y < -wrap) c.y = h + wrap;
+      else if (c.y > h + wrap) c.y = -wrap;
+
+      const hue = (baseHue + c.hueOffset + audioVal * 40) % 360;
+      const alpha = (0.04 + pulse * 0.25) * (0.78 + audioVal * 0.5);
+
+      const grad = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, radius);
+      grad.addColorStop(0, hslColor(hue, 56, lightness, alpha));
+      grad.addColorStop(0.68, hslColor(hue, 52, lightness, alpha * 0.46));
+      grad.addColorStop(1, hslColor(hue, 50, lightness, 0));
       ctx.beginPath();
-      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.arc(c.x, c.y, radius, 0, RADIAL_TAU);
       ctx.fillStyle = grad;
       ctx.fill();
-
-      // Outer ring
-      ctx.beginPath();
-      ctx.arc(x, y, radius * 1.2, 0, Math.PI * 2);
-      ctx.strokeStyle = hslColor(hue, 55, lightness, alpha * 0.3);
-      ctx.lineWidth = 1;
-      ctx.stroke();
     }
   }
 
@@ -1913,15 +2214,14 @@
       ctx.lineWidth = 2;
       ctx.stroke();
 
-      if (polygraphShowBackground) {
-        // Filled area under curve
-        const lastX = graphX + ((polyHistory.length - 1) / POLY_MAX_POINTS) * graphW;
-        ctx.lineTo(lastX, graphY + graphH);
-        ctx.lineTo(graphX, graphY + graphH);
-        ctx.closePath();
-        ctx.fillStyle = hslColor(baseHue, 50, lightness, 0.06);
-        ctx.fill();
-      }
+      // Filled signal area reaches full window unless graph UI is enabled.
+      const lastX = graphX + ((polyHistory.length - 1) / POLY_MAX_POINTS) * graphW;
+      const fillBottom = polygraphShowBackground ? (graphY + graphH) : h;
+      ctx.lineTo(lastX, fillBottom);
+      ctx.lineTo(graphX, fillBottom);
+      ctx.closePath();
+      ctx.fillStyle = hslColor(baseHue, 50, lightness, polygraphShowBackground ? 0.06 : 0.035);
+      ctx.fill();
     }
 
     // Current level indicator on right
@@ -1939,8 +2239,11 @@
   // ═══════════════════════════════
   let dbHistory = [];
   const DB_MAX_POINTS = 200;
+  const DB_HISTORY_PUSH_INTERVAL = 2;
+  let dbHistoryFrame = 0;
   let peakDb = -100;
   let peakHold = 0;
+  let decibelsShowChart = false;
   function drawDecibels(w, h) {
     // Calculate dB from RMS
     let rms = 0;
@@ -1953,8 +2256,11 @@
     const clampedDb = Math.max(-60, Math.min(0, db));
     const normalized = (clampedDb + 60) / 60; // 0 to 1
 
-    dbHistory.push(normalized);
-    if (dbHistory.length > DB_MAX_POINTS) dbHistory.shift();
+    dbHistoryFrame++;
+    if (dbHistoryFrame % DB_HISTORY_PUSH_INTERVAL === 0) {
+      dbHistory.push(normalized);
+      if (dbHistory.length > DB_MAX_POINTS) dbHistory.shift();
+    }
 
     // Peak hold
     if (normalized > peakDb) {
@@ -1972,7 +2278,7 @@
     // Main meter background
     ctx.fillStyle = fg(0.04);
     ctx.beginPath();
-    ctx.roundRect(margin, meterY, meterW, meterH, 6);
+    roundedRectPath(margin, meterY, meterW, meterH, 6);
     ctx.fill();
 
     // Meter fill with color gradient (green -> yellow -> red)
@@ -1986,7 +2292,7 @@
       grad.addColorStop(1, hslColor(0, 80, gL, 0.9));
       ctx.fillStyle = grad;
       ctx.beginPath();
-      ctx.roundRect(margin, meterY, fillW, meterH, 6);
+      roundedRectPath(margin, meterY, fillW, meterH, 6);
       ctx.fill();
     }
 
@@ -1995,29 +2301,31 @@
     ctx.fillStyle = fg(0.6);
     ctx.fillRect(peakX - 1, meterY - 2, 2, meterH + 4);
 
-    // Scale markings
-    ctx.fillStyle = fg(0.2);
-    for (let db = -60; db <= 0; db += 10) {
-      const x = margin + ((db + 60) / 60) * meterW;
-      ctx.fillRect(x, meterY + meterH + 4, 1, 6);
-    }
-
-    // History graph below
     const graphY = h * 0.55;
     const graphH = h * 0.3;
 
-    // Grid
-    ctx.strokeStyle = fg(0.04);
-    ctx.lineWidth = 1;
-    for (let i = 0; i <= 6; i++) {
-      const y = graphY + (i / 6) * graphH;
-      ctx.beginPath();
-      ctx.moveTo(margin, y);
-      ctx.lineTo(w - margin, y);
-      ctx.stroke();
+    if (decibelsShowChart) {
+      // Scale markings
+      ctx.fillStyle = fg(0.2);
+      for (let db = -60; db <= 0; db += 10) {
+        const x = margin + ((db + 60) / 60) * meterW;
+        ctx.fillRect(x, meterY + meterH + 4, 1, 6);
+      }
+
+      // Grid
+      ctx.strokeStyle = fg(0.04);
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 6; i++) {
+        const y = graphY + (i / 6) * graphH;
+        ctx.beginPath();
+        ctx.moveTo(margin, y);
+        ctx.lineTo(w - margin, y);
+        ctx.stroke();
+      }
+
     }
 
-    // History line
+    // Always show the colored history line; chart toggle controls only UI/grid.
     if (dbHistory.length > 1) {
       ctx.beginPath();
       for (let i = 0; i < dbHistory.length; i++) {
@@ -2031,13 +2339,15 @@
       ctx.lineWidth = 1.5;
       ctx.stroke();
 
-      // Filled area
-      const lastX = margin + ((dbHistory.length - 1) / DB_MAX_POINTS) * meterW;
-      ctx.lineTo(lastX, graphY + graphH);
-      ctx.lineTo(margin, graphY + graphH);
-      ctx.closePath();
-      ctx.fillStyle = hslColor(120, 40, lightness, 0.04);
-      ctx.fill();
+      if (decibelsShowChart) {
+        // Filled area under the line belongs to chart UI.
+        const lastX = margin + ((dbHistory.length - 1) / DB_MAX_POINTS) * meterW;
+        ctx.lineTo(lastX, graphY + graphH);
+        ctx.lineTo(margin, graphY + graphH);
+        ctx.closePath();
+        ctx.fillStyle = hslColor(120, 40, lightness, 0.04);
+        ctx.fill();
+      }
     }
   }
 
@@ -2076,19 +2386,98 @@
   function startVisualiser() {
     visPicker.classList.add('hidden');
     if (!running) { running = true; resize(); animate(); }
+    requestWakeLock();
   }
 
   // ── UI Logic ──
+  const dialogEl = document.getElementById('dialog');
+  const sensitivityControl = document.getElementById('sensitivityControl');
+  const sensitivityLabel = document.getElementById('sensitivityLabel');
+  const sensitivitySlider = document.getElementById('sensitivitySlider');
+
+  function setSensitivity(value = DEFAULT_SENSITIVITY) {
+    const clamped = Math.min(SENSITIVITY_MAX, Math.max(SENSITIVITY_MIN, value));
+    sensitivity = clamped;
+    sensitivitySlider.value = String(sensitivityToSliderValue(clamped));
+  }
+
+  function clamp01(v) {
+    return Math.min(1, Math.max(0, v));
+  }
+
+  function sliderValueToSensitivity(value) {
+    const t = clamp01(value);
+    if (t <= 0.5) {
+      const lowSpan = DEFAULT_SENSITIVITY - SENSITIVITY_MIN;
+      return SENSITIVITY_MIN + (t / 0.5) * lowSpan;
+    }
+    const highSpan = SENSITIVITY_MAX - DEFAULT_SENSITIVITY;
+    return DEFAULT_SENSITIVITY + ((t - 0.5) / 0.5) * highSpan;
+  }
+
+  function sensitivityToSliderValue(value) {
+    const clamped = Math.min(SENSITIVITY_MAX, Math.max(SENSITIVITY_MIN, value));
+    if (clamped <= DEFAULT_SENSITIVITY) {
+      const lowSpan = DEFAULT_SENSITIVITY - SENSITIVITY_MIN;
+      return lowSpan > 0 ? ((clamped - SENSITIVITY_MIN) / lowSpan) * 0.5 : SENSITIVITY_UI_DEFAULT;
+    }
+    const highSpan = SENSITIVITY_MAX - DEFAULT_SENSITIVITY;
+    return highSpan > 0 ? 0.5 + ((clamped - DEFAULT_SENSITIVITY) / highSpan) * 0.5 : SENSITIVITY_UI_DEFAULT;
+  }
+
+  function setSensitivityAdjusting(active) {
+    const shouldShowAdjusting = active && running && changingSource;
+    dialogEl.classList.toggle('sensitivity-adjusting', shouldShowAdjusting);
+  }
+
+  function updateSensitivityControlVisibility() {
+    const show = running && changingSource;
+    sensitivityControl.classList.toggle('show', show);
+    if (!show) setSensitivityAdjusting(false);
+  }
+
+  sensitivitySlider.addEventListener('input', () => {
+    const next = Number.parseFloat(sensitivitySlider.value);
+    const mapped = sliderValueToSensitivity(Number.isFinite(next) ? next : SENSITIVITY_UI_DEFAULT);
+    setSensitivity(mapped);
+  });
+  sensitivitySlider.addEventListener('pointerdown', () => setSensitivityAdjusting(true));
+  sensitivitySlider.addEventListener('pointerup', () => setSensitivityAdjusting(false));
+  sensitivitySlider.addEventListener('pointercancel', () => setSensitivityAdjusting(false));
+  sensitivitySlider.addEventListener('mousedown', () => setSensitivityAdjusting(true));
+  sensitivitySlider.addEventListener('mouseup', () => setSensitivityAdjusting(false));
+  sensitivitySlider.addEventListener('touchstart', () => setSensitivityAdjusting(true), { passive: true });
+  sensitivitySlider.addEventListener('touchend', () => setSensitivityAdjusting(false), { passive: true });
+  sensitivitySlider.addEventListener('touchcancel', () => setSensitivityAdjusting(false), { passive: true });
+  sensitivitySlider.addEventListener('keydown', () => setSensitivityAdjusting(true));
+  sensitivitySlider.addEventListener('keyup', () => setSensitivityAdjusting(false));
+  sensitivitySlider.addEventListener('change', () => setSensitivityAdjusting(false));
+  sensitivitySlider.addEventListener('blur', () => setSensitivityAdjusting(false));
+  sensitivitySlider.addEventListener('dblclick', () => setSensitivity(DEFAULT_SENSITIVITY));
+  window.addEventListener('pointerup', () => setSensitivityAdjusting(false));
+  window.addEventListener('mouseup', () => setSensitivityAdjusting(false));
+  window.addEventListener('touchend', () => setSensitivityAdjusting(false), { passive: true });
+  window.addEventListener('touchcancel', () => setSensitivityAdjusting(false), { passive: true });
+  sensitivityLabel.addEventListener('click', () => setSensitivity(DEFAULT_SENSITIVITY));
+  sensitivityLabel.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      setSensitivity(DEFAULT_SENSITIVITY);
+    }
+  });
+  setSensitivity(DEFAULT_SENSITIVITY);
+  updateSensitivityControlVisibility();
 
   // Dialog buttons
   document.getElementById('btnMic').addEventListener('click', () => initAudio('mic'));
   document.getElementById('btnSystem').addEventListener('click', () => initAudio('system'));
 
   // Click outside source buttons dismisses dialog when changing source mid-session
-  document.getElementById('dialog').addEventListener('click', (e) => {
-    if (e.target === document.getElementById('dialog') && changingSource && running) {
+  dialogEl.addEventListener('click', (e) => {
+    if (e.target === dialogEl && changingSource && running) {
       changingSource = false;
-      document.getElementById('dialog').classList.add('hidden');
+      dialogEl.classList.add('hidden');
+      updateSensitivityControlVisibility();
     }
   });
 
@@ -2116,21 +2505,198 @@
       y <= rect.bottom + RADIAL_CLICK_EXCLUSION;
   }
 
+  function canUseCanvasInteraction(x, y) {
+    if (!running) return false;
+    if (isNearOptionsButton(x, y)) return false;
+    if (optPanel.classList.contains('open')) return false;
+    if (!visPicker.classList.contains('hidden')) return false;
+    if (!dialogEl.classList.contains('hidden')) return false;
+    if (menuOverlay.classList.contains('open')) return false;
+    if (colourOverlay.classList.contains('open')) return false;
+    return true;
+  }
+
+  function setPointerFieldFromClient(clientX, clientY) {
+    const p = getCanvasPoint(clientX, clientY);
+    pointerField.x = p.x;
+    pointerField.y = p.y;
+  }
+
+  function activatePointerField(clientX, clientY) {
+    setPointerFieldFromClient(clientX, clientY);
+    pointerField.active = true;
+  }
+
+  function clearPointerField(pointerId = null) {
+    if (pointerId === null) {
+      pointerField.touchPointerId = null;
+      pointerField.active = false;
+      return;
+    }
+    if (pointerId !== null && pointerField.touchPointerId !== pointerId) return;
+    if (pointerId !== null && pointerField.touchPointerId === pointerId) {
+      pointerField.touchPointerId = null;
+    }
+    pointerField.active = false;
+  }
+
+  const HOLD_SPAWN_INTERVAL_MS = 300;
+  let holdSpawnTimer = null;
+  let holdSpawnMode = null;
+  let holdSpawnPointerId = null;
+  let holdSpawnSuppressClick = false;
+  const holdSpawnPoint = { x: 0, y: 0 };
+
+  canvas.addEventListener('pointerdown', (e) => {
+    if (!canUseCanvasInteraction(e.clientX, e.clientY)) return;
+    activatePointerField(e.clientX, e.clientY);
+    if (e.pointerType !== 'mouse') pointerField.touchPointerId = e.pointerId;
+
+    const mode = visualisers[currentVis].name;
+    if (mode !== 'starfield') return;
+
+    if (e.pointerType === 'mouse') {
+      if (e.button !== undefined && e.button !== 0) return;
+      if (!starfieldMouseFollow) {
+        setStarfieldOriginFromClient(e.clientX, e.clientY);
+        starfieldMouseFollow = true;
+      } else {
+        starfieldMouseFollow = false;
+        beginStarfieldReturn();
+      }
+      return;
+    }
+
+    starfieldMouseFollow = false;
+    starfieldTouchDragging = true;
+    starfieldTouchPointerId = e.pointerId;
+    setStarfieldOriginFromClient(e.clientX, e.clientY);
+    canvas.setPointerCapture?.(e.pointerId);
+  });
+
+  canvas.addEventListener('pointermove', (e) => {
+    const mode = visualisers[currentVis].name;
+
+    if (e.pointerType === 'mouse') {
+      if (!canUseCanvasInteraction(e.clientX, e.clientY)) {
+        pointerField.active = false;
+        return;
+      }
+      activatePointerField(e.clientX, e.clientY);
+      if (mode === 'starfield' && starfieldMouseFollow) {
+        setStarfieldOriginFromClient(e.clientX, e.clientY);
+      }
+      return;
+    }
+    if (pointerField.touchPointerId !== e.pointerId) return;
+    if (!canUseCanvasInteraction(e.clientX, e.clientY)) {
+      clearPointerField(e.pointerId);
+      return;
+    }
+    activatePointerField(e.clientX, e.clientY);
+
+    if (mode === 'starfield' && starfieldTouchDragging && e.pointerId === starfieldTouchPointerId) {
+      setStarfieldOriginFromClient(e.clientX, e.clientY);
+    }
+  });
+
+  canvas.addEventListener('pointerup', (e) => {
+    const mode = visualisers[currentVis].name;
+    if (e.pointerType !== 'mouse') {
+      clearPointerField(e.pointerId);
+      if (mode === 'starfield') {
+        stopStarfieldTouchDrag(e.pointerId);
+        canvas.releasePointerCapture?.(e.pointerId);
+      }
+    }
+  });
+  canvas.addEventListener('pointercancel', (e) => {
+    clearPointerField(e.pointerId);
+    stopStarfieldTouchDrag(e.pointerId);
+    canvas.releasePointerCapture?.(e.pointerId);
+  });
+  canvas.addEventListener('pointerleave', (e) => {
+    if (e.pointerType === 'mouse') {
+      pointerField.active = false;
+    } else {
+      clearPointerField(e.pointerId);
+      stopStarfieldTouchDrag(e.pointerId);
+      canvas.releasePointerCapture?.(e.pointerId);
+    }
+  });
+  window.addEventListener('blur', () => {
+    clearPointerField();
+    pointerField.strength = 0;
+    starfieldMouseFollow = false;
+    stopStarfieldTouchDrag();
+    if (!starfieldReturnActive) beginStarfieldReturn();
+  });
+
+  function spawnModeAtPointer(mode, clientX, clientY) {
+    const p = getCanvasPoint(clientX, clientY);
+    if (mode === 'fireworks') {
+      spawnFireworkBurst(p.x, p.y, 0.75);
+    } else if (mode === 'raindrops') {
+      spawnRaindropBurst(p.x, p.y, 1, 1);
+    }
+  }
+
+  function stopHoldSpawn() {
+    if (holdSpawnTimer) {
+      clearInterval(holdSpawnTimer);
+      holdSpawnTimer = null;
+    }
+    holdSpawnMode = null;
+    holdSpawnPointerId = null;
+  }
+
+  canvas.addEventListener('pointerdown', (e) => {
+    const mode = visualisers[currentVis].name;
+    if (mode !== 'fireworks' && mode !== 'raindrops') return;
+    if (!canUseCanvasInteraction(e.clientX, e.clientY)) return;
+    if (e.button !== undefined && e.button !== 0) return;
+
+    stopHoldSpawn();
+    holdSpawnMode = mode;
+    holdSpawnPointerId = e.pointerId;
+    holdSpawnPoint.x = e.clientX;
+    holdSpawnPoint.y = e.clientY;
+    holdSpawnSuppressClick = false;
+
+    holdSpawnTimer = setInterval(() => {
+      if (!holdSpawnMode) return;
+      if (!canUseCanvasInteraction(holdSpawnPoint.x, holdSpawnPoint.y)) return;
+      spawnModeAtPointer(holdSpawnMode, holdSpawnPoint.x, holdSpawnPoint.y);
+      holdSpawnSuppressClick = true;
+    }, HOLD_SPAWN_INTERVAL_MS);
+
+    canvas.setPointerCapture?.(e.pointerId);
+  });
+
+  canvas.addEventListener('pointermove', (e) => {
+    if (holdSpawnPointerId === null || e.pointerId !== holdSpawnPointerId) return;
+    holdSpawnPoint.x = e.clientX;
+    holdSpawnPoint.y = e.clientY;
+  });
+
+  function endHoldSpawnForPointer(e) {
+    if (holdSpawnPointerId === null || e.pointerId !== holdSpawnPointerId) return;
+    stopHoldSpawn();
+    canvas.releasePointerCapture?.(e.pointerId);
+  }
+
+  canvas.addEventListener('pointerup', endHoldSpawnForPointer);
+  canvas.addEventListener('pointercancel', endHoldSpawnForPointer);
+  window.addEventListener('blur', stopHoldSpawn);
+
   canvas.addEventListener('click', (e) => {
-    if (!running) return;
-    if (isNearOptionsButton(e.clientX, e.clientY)) return;
-    if (optPanel.classList.contains('open')) return;
-    if (!visPicker.classList.contains('hidden')) return;
-
-    const dialogEl = document.getElementById('dialog');
-    if (!dialogEl.classList.contains('hidden')) return;
-
-    if (document.getElementById('menuOverlay').classList.contains('open')) return;
-    if (document.getElementById('colourOverlay').classList.contains('open')) return;
+    if (!canUseCanvasInteraction(e.clientX, e.clientY)) return;
 
     const mode = visualisers[currentVis].name;
     if (mode === 'bars') {
       barsVariant = (barsVariant + 1) % BARS_VARIANT_COUNT;
+    } else if (mode === 'waveform') {
+      waveformVertical = !waveformVertical;
     } else if (mode === 'nightingale') {
       toggleNightingaleSpin();
     } else if (mode === 'radial') {
@@ -2141,12 +2707,20 @@
       toggleKaleidoSpin();
     } else if (mode === 'polygraph') {
       polygraphShowBackground = !polygraphShowBackground;
+    } else if (mode === 'decibels') {
+      decibelsShowChart = !decibelsShowChart;
     } else if (mode === 'fireworks') {
-      const p = getCanvasPoint(e.clientX, e.clientY);
-      spawnFireworkBurst(p.x, p.y, 0.75);
+      if (holdSpawnSuppressClick) {
+        holdSpawnSuppressClick = false;
+        return;
+      }
+      spawnModeAtPointer(mode, e.clientX, e.clientY);
     } else if (mode === 'raindrops') {
-      const p = getCanvasPoint(e.clientX, e.clientY);
-      spawnRaindropBurst(p.x, p.y, 1, 1);
+      if (holdSpawnSuppressClick) {
+        holdSpawnSuppressClick = false;
+        return;
+      }
+      spawnModeAtPointer(mode, e.clientX, e.clientY);
     } else if (mode === 'swirls') {
       swirlDirection *= -1;
     }
@@ -2200,7 +2774,8 @@
   // Change source
   document.getElementById('optSource').addEventListener('click', () => {
     changingSource = true;
-    document.getElementById('dialog').classList.remove('hidden');
+    dialogEl.classList.remove('hidden');
+    updateSensitivityControlVisibility();
     closeOptions();
   });
 
@@ -2223,7 +2798,6 @@
   }
 
   // ── Colour Picker ──
-  const colourOverlay = document.getElementById('colourOverlay');
   const colourGrid = document.getElementById('colourGrid');
 
   const colourOptions = [
@@ -2268,7 +2842,6 @@
   });
 
   // ── Visualiser Menu ──
-  const menuOverlay = document.getElementById('menuOverlay');
   const menuGrid = document.getElementById('menuGrid');
 
   function openMenu() {
@@ -2311,6 +2884,7 @@
     particles = [];
     particlesSpawnAccumulator = 0;
     wfSmoothed = null;
+    waveformVertical = false;
     barsSmoothed = null;
     mirrorBarsSmoothed = null;
     barsVariant = 0;
@@ -2329,7 +2903,18 @@
     raindrops = [];
     swirlTime = 0;
     swirlDirection = 1;
-    circleTime = 0;
+    fogCircles = [];
+    fogCirclesW = 0;
+    fogCirclesH = 0;
+    starfieldOriginX = null;
+    starfieldOriginY = null;
+    starfieldMouseFollow = false;
+    starfieldTouchDragging = false;
+    starfieldTouchPointerId = null;
+    starfieldReturnActive = false;
+    starfieldReturnStart = 0;
+    starfieldReturnFromX = 0;
+    starfieldReturnFromY = 0;
     radialRotation = 0;
     radialSpinSpeed = 0;
     radialSpinEnabled = false;
@@ -2359,6 +2944,8 @@
     polyHistory = [];
     polygraphShowBackground = false;
     dbHistory = [];
+    dbHistoryFrame = 0;
+    decibelsShowChart = false;
     peakDb = -100;
     peakHold = 0;
     clearTimeout(visNameHintTimer);
@@ -2409,6 +2996,16 @@
   }
   document.addEventListener('touchstart', resetIdle, { passive: true });
   resetIdle();
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      requestWakeLock();
+    } else {
+      releaseWakeLock();
+    }
+  });
+  window.addEventListener('pagehide', releaseWakeLock);
+  window.addEventListener('beforeunload', releaseWakeLock);
 
   // ── Keyboard shortcuts ──
   document.addEventListener('keydown', (e) => {
