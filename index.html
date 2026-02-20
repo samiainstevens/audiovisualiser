@@ -1151,8 +1151,8 @@
   const MAX_FW_PARTICLES = 300;
   function drawFireworks(w, h) {
     // Fade previous frame instead of clearing — smooth trails, no flicker
-    // Lower alpha for longer fade (traces linger for several seconds)
-    ctx.fillStyle = lightMode ? 'rgba(245,245,245,0.05)' : 'rgba(10,10,10,0.05)';
+    // Lower alpha for longer fade and darken overlay for less brightness
+    ctx.fillStyle = lightMode ? 'rgba(180,180,180,0.05)' : 'rgba(6,6,6,0.05)';
     ctx.fillRect(0, 0, w, h);
 
     const level = getLevel();
@@ -1623,10 +1623,8 @@
     peakDb = -100;
     peakHold = 0;
 
-    // Clear canvas fully unless fireworks is the next visualiser
-    if (visualisers[currentVis]?.name !== 'fireworks') {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-    }
+    // Always clear canvas fully on visualiser switch
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
   }
 
   // ── Idle auto-hide ──
