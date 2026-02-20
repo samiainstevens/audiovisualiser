@@ -1,0 +1,1708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="description" content="audio visualiser — choose from 16 visualisation modes with customisable colours">
+<meta name="theme-color" content="#0a0a0a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>visualiser</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --fg: #e0e0e0;
+    --overlay-bg: rgba(0,0,0,0.85);
+    --btn-bg: rgba(255,255,255,0.08);
+    --btn-hover: rgba(255,255,255,0.15);
+  }
+  .light {
+    --bg: #f5f5f5;
+    --fg: #1a1a1a;
+    --overlay-bg: rgba(255,255,255,0.9);
+    --btn-bg: rgba(0,0,0,0.06);
+    --btn-hover: rgba(0,0,0,0.12);
+  }
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; cursor: none !important; }
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: 'Garamond', 'EB Garamond', 'Cormorant Garamond', 'Georgia', 'Times New Roman', serif;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    cursor: none;
+  }
+  canvas {
+    display: block;
+    width: 100%; height: 100%;
+    position: fixed; top: 0; left: 0;
+  }
+
+  /* Options toggle button */
+  #optBtn {
+    position: fixed;
+    top: 16px; right: 16px;
+    z-index: 100;
+    width: 40px; height: 40px;
+    background: none;
+    border: none;
+    color: var(--fg);
+    font-size: 20px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: opacity 0.2s, transform 0.3s;
+    opacity: 0.4;
+    line-height: 1;
+  }
+  #optBtn:hover { opacity: 1; }
+  #optBtn .arrow {
+    display: inline-block;
+    transition: transform 0.3s ease;
+    font-size: 16px;
+  }
+  #optBtn.open .arrow { transform: rotate(-90deg); }
+
+  /* Options panel */
+  #optPanel {
+    position: fixed;
+    top: 64px; right: 16px;
+    z-index: 99;
+    background: var(--overlay-bg);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-radius: 12px;
+    padding: 8px 0;
+    min-width: 180px;
+    transform: translateY(-8px);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s, transform 0.2s;
+  }
+  #optPanel.open {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: all;
+  }
+  #optPanel button {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 12px 20px;
+    background: none;
+    border: none;
+    color: var(--fg);
+    font-size: 14px;
+    font-family: inherit;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.15s;
+  }
+  #optPanel button:hover { background: var(--btn-hover); }
+
+  /* Opening dialog */
+  #dialog {
+    position: fixed; inset: 0;
+    z-index: 200;
+    background: var(--bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 28px;
+    transition: opacity 0.4s;
+  }
+  #dialog.hidden { opacity: 0; pointer-events: none; }
+  .src-heading {
+    font-size: 13px;
+    color: var(--fg);
+    opacity: 0.4;
+    letter-spacing: 0.5px;
+    font-weight: 400;
+  }
+  .src-btn {
+    width: 120px;
+    height: 120px;
+    border-radius: 50%;
+    border: none;
+    background: var(--btn-bg);
+    color: var(--fg);
+    font-size: 14px;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.15s;
+    text-align: center;
+    font-family: inherit;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .src-btn:hover { background: var(--btn-hover); }
+  .src-btn:active { transform: scale(0.96); }
+  .src-row {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Visualiser picker (after audio connected) */
+  #visPicker {
+    position: fixed; inset: 0;
+    z-index: 190;
+    background: var(--bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 16px;
+    transition: opacity 0.4s;
+    padding: 40px 20px;
+  }
+  #visPicker.hidden { opacity: 0; pointer-events: none; }
+  #visPickerGrid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    max-width: 540px;
+    width: 100%;
+  }
+  .pick-item {
+    aspect-ratio: 1;
+    border-radius: 10px;
+    border: none;
+    background: var(--btn-bg);
+    color: var(--fg);
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 10px;
+    transition: background 0.2s, transform 0.1s;
+  }
+  .pick-item:hover { background: var(--btn-hover); }
+  .pick-item:active { transform: scale(0.96); }
+  .pick-random {
+    grid-column: 1 / -1;
+    aspect-ratio: auto;
+    padding: 18px;
+    font-size: 14px;
+    letter-spacing: 0.3px;
+  }
+
+  /* Visualiser menu overlay */
+  #menuOverlay {
+    position: fixed; inset: 0;
+    z-index: 150;
+    background: var(--overlay-bg);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s;
+  }
+  #menuOverlay.open { opacity: 1; pointer-events: all; }
+  #menuGrid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    max-width: 580px;
+    width: 90%;
+    padding: 20px;
+  }
+  .menu-item {
+    aspect-ratio: 1;
+    border-radius: 12px;
+    border: none;
+    background: var(--btn-bg);
+    color: var(--fg);
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 12px;
+    transition: background 0.2s;
+  }
+  .menu-item:hover { background: var(--btn-hover); }
+  .menu-item.active { background: var(--btn-hover); }
+  .overlay-close {
+    position: fixed;
+    top: 16px; right: 16px;
+    width: 40px; height: 40px;
+    background: none;
+    border: none;
+    color: var(--fg);
+    font-size: 20px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0.5;
+    transition: opacity 0.2s;
+  }
+  .overlay-close:hover { opacity: 1; }
+  #menuClose { z-index: 160; }
+  #colourClose { z-index: 210; }
+  .opt-separator {
+    height: 1px;
+    background: var(--fg);
+    opacity: 0.06;
+    margin: 4px 20px;
+  }
+  .opt-footer {
+    padding: 8px 20px;
+    font-size: 11px;
+    color: var(--fg);
+    opacity: 0.25;
+    text-align: left;
+    line-height: 1.6;
+  }
+  .opt-footer a {
+    color: var(--fg);
+    text-decoration: none;
+    opacity: 0.7;
+  }
+  .opt-footer a:hover { opacity: 1; }
+
+  /* Colour picker overlay */
+  #colourOverlay {
+    position: fixed; inset: 0;
+    z-index: 200;
+    background: var(--overlay-bg);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 20px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s;
+  }
+  #colourOverlay.open { opacity: 1; pointer-events: all; }
+  .colour-heading {
+    font-size: 13px;
+    color: var(--fg);
+    opacity: 0.4;
+    letter-spacing: 0.5px;
+  }
+  .colour-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 40px);
+    gap: 16px;
+    justify-content: center;
+  }
+  .colour-option {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    border: none;
+    cursor: pointer;
+    transition: transform 0.15s, box-shadow 0.15s;
+    padding: 0;
+    position: relative;
+    background: none;
+  }
+  .colour-option:hover { transform: scale(1.12); }
+  .colour-option:active { transform: scale(0.95); }
+  .colour-option.active {
+    box-shadow: 0 0 0 3px var(--bg), 0 0 0 5.5px rgba(128,128,128,0.5);
+  }
+  .colour-swatch {
+    width: 100%; height: 100%;
+    border-radius: 50%;
+    display: block;
+  }
+
+  /* Hide controls briefly on idle */
+  .controls-hidden #optBtn { opacity: 0 !important; transition: opacity 0.8s; }
+  .controls-hidden #cursor { opacity: 0 !important; transition: opacity 0.8s; }
+
+  /* Custom cursor */
+  #cursor {
+    position: fixed;
+    z-index: 9999;
+    pointer-events: none;
+    width: 20px; height: 20px;
+    margin-left: -10px; margin-top: -10px;
+    border: 1.5px solid var(--fg);
+    border-radius: 50%;
+    opacity: 0.4;
+    transition: opacity 0.2s;
+    display: none;
+  }
+  #cursor::after {
+    content: '';
+    position: absolute;
+    top: 50%; left: 50%;
+    width: 4px; height: 4px;
+    margin-left: -2px; margin-top: -2px;
+    background: var(--fg);
+    border-radius: 50%;
+  }
+
+  @media (max-width: 480px) {
+    #optPanel { right: 8px; top: 60px; }
+    #optBtn { top: 12px; right: 12px; width: 36px; height: 36px; }
+    .src-btn { width: 100px; height: 100px; font-size: 13px; }
+    .src-row { flex-direction: row; gap: 12px; }
+    #visPickerGrid { grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 8px; }
+    .pick-item { font-size: 11px; padding: 8px; }
+    .pick-random { padding: 14px; font-size: 13px; }
+    .colour-option { width: 36px; height: 36px; }
+    .colour-grid { grid-template-columns: repeat(3, 36px); gap: 12px; }
+  }
+</style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+<div id="cursor"></div>
+
+<!-- Options button -->
+<button id="optBtn" aria-label="Options"><span class="arrow">&#x276F;</span></button>
+
+<!-- Options panel -->
+<div id="optPanel">
+  <button id="optFullscreen">fullscreen</button>
+  <button id="optTheme">light mode</button>
+  <button id="optRandom">random visualiser</button>
+  <button id="optNext">next visualiser</button>
+  <button id="optMenu">menu</button>
+  <button id="optSource">change source</button>
+  <button id="optColour">change colour</button>
+  <button id="optShare">share</button>
+  <div class="opt-separator"></div>
+  <div class="opt-footer">
+    <a href="https://buymeacoffee.com/samstevens" target="_blank" rel="noopener">buy me a coffee</a><br>
+    &copy; sam stevens 2026
+  </div>
+</div>
+
+<!-- Opening dialog -->
+<div id="dialog">
+  <span class="src-heading">choose audio source</span>
+  <div class="src-row">
+    <button class="src-btn" id="btnMic">microphone</button>
+    <button class="src-btn" id="btnSystem">device sound</button>
+  </div>
+</div>
+
+<!-- Visualiser picker -->
+<div id="visPicker" class="hidden">
+  <div id="visPickerGrid"></div>
+</div>
+
+<!-- Visualiser menu overlay -->
+<div id="menuOverlay">
+  <button class="overlay-close" id="menuClose">&#x2715;</button>
+  <div id="menuGrid"></div>
+</div>
+
+<!-- Colour picker overlay -->
+<div id="colourOverlay">
+  <button class="overlay-close" id="colourClose">&#x2715;</button>
+  <span class="colour-heading">choose colour</span>
+  <div class="colour-grid" id="colourGrid"></div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  // ── State ──
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  let audioCtx, analyser, dataArray, freqArray, source, currentStream;
+  let currentVis = 0;
+  let running = false;
+  let changingSource = false;
+  let lightMode = false;
+  let colourMode = 'rainbow';
+  let idleTimer, controlsHidden = false;
+  const fftSize = 2048;
+
+  // ── Visualisers ──
+  const visualisers = [
+    { name: 'frequency bars', fn: drawBars },
+    { name: 'waveform', fn: drawWaveform },
+    { name: 'radial', fn: drawRadial },
+    { name: 'particles', fn: drawParticles },
+    { name: 'mirror bars', fn: drawMirrorBars },
+    { name: 'spectrum ring', fn: drawSpectrumRing },
+    { name: 'terrain', fn: drawTerrain },
+    { name: 'starfield', fn: drawStarfield },
+    { name: 'aurora', fn: drawAurora },
+    { name: 'kaleidoscope', fn: drawKaleidoscope },
+    { name: 'raindrops', fn: drawRaindrops },
+    { name: 'swirls', fn: drawSwirls },
+    { name: 'dancing circles', fn: drawDancingCircles },
+    { name: 'fireworks', fn: drawFireworks },
+    { name: 'polygraph', fn: drawPolygraph },
+    { name: 'decibels', fn: drawDecibels },
+  ];
+
+  // ── Particle state ──
+  let particles = [];
+  const MAX_PARTICLES = 200;
+
+  // ── Terrain state ──
+  let terrainHistory = [];
+  const TERRAIN_ROWS = 60;
+  let terrainFrameCount = 0;
+
+  // ── Starfield state ──
+  let stars = [];
+  const NUM_STARS = 300;
+  function initStars() {
+    stars = [];
+    for (let i = 0; i < NUM_STARS; i++) {
+      stars.push({
+        x: (Math.random() - 0.5) * 2,
+        y: (Math.random() - 0.5) * 2,
+        z: Math.random()
+      });
+    }
+  }
+  initStars();
+
+  // ── Audio Setup ──
+  async function initAudio(mode) {
+    try {
+      // Stop previous stream if changing source
+      if (currentStream) {
+        currentStream.getTracks().forEach(t => t.stop());
+        currentStream = null;
+      }
+      if (source) { source.disconnect(); source = null; }
+      if (audioCtx) { await audioCtx.close(); audioCtx = null; }
+
+      let stream;
+      if (mode === 'mic') {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      } else {
+        stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+        stream.getVideoTracks().forEach(t => t.stop());
+        if (stream.getAudioTracks().length === 0) {
+          alert('No audio track found. Make sure to share a tab or screen with audio.');
+          return;
+        }
+      }
+
+      currentStream = stream;
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = fftSize;
+      analyser.smoothingTimeConstant = 0.8;
+
+      source = audioCtx.createMediaStreamSource(stream);
+      source.connect(analyser);
+
+      dataArray = new Uint8Array(analyser.frequencyBinCount);
+      freqArray = new Uint8Array(analyser.frequencyBinCount);
+
+      document.getElementById('dialog').classList.add('hidden');
+
+      // If changing source, skip picker and go straight back to visualiser
+      if (changingSource) {
+        changingSource = false;
+        if (!running) { running = true; resize(); animate(); }
+      } else {
+        // Show visualiser picker
+        showVisPicker();
+      }
+    } catch (e) {
+      console.error(e);
+      if (changingSource) {
+        changingSource = false;
+        document.getElementById('dialog').classList.add('hidden');
+      }
+      if (e.name !== 'NotAllowedError') {
+        alert('could not access audio: ' + e.message);
+      }
+    }
+  }
+
+  // ── Canvas resize ──
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = window.innerWidth * dpr;
+    canvas.height = window.innerHeight * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+
+  // ── Animation loop ──
+  function animate() {
+    if (!running) return;
+    requestAnimationFrame(animate);
+
+    analyser.getByteTimeDomainData(dataArray);
+    analyser.getByteFrequencyData(freqArray);
+
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+
+    // Fireworks uses its own fade-overlay; skip full clear for it
+    if (visualisers[currentVis].name !== 'fireworks') {
+      ctx.fillStyle = lightMode ? '#f5f5f5' : '#0a0a0a';
+      ctx.fillRect(0, 0, w, h);
+    }
+
+    visualisers[currentVis].fn(w, h);
+  }
+
+  // ── Helper: get average level ──
+  function getLevel() {
+    let sum = 0;
+    for (let i = 0; i < freqArray.length; i++) sum += freqArray[i];
+    return sum / freqArray.length / 255;
+  }
+
+  // ── Helper: color based on mode ──
+  function fg(alpha = 1) {
+    return lightMode ? `rgba(20,20,20,${alpha})` : `rgba(230,230,230,${alpha})`;
+  }
+  function hslColor(h, s, l, a = 1) {
+    if (colourMode === 'monochrome') {
+      return `hsla(0,0%,${l}%,${a})`;
+    }
+    if (colourMode !== 'rainbow') {
+      // Fixed hue pastel mode
+      const pastelHues = {
+        'rose': 350, 'peach': 25, 'lavender': 270,
+        'mint': 155, 'sky': 200, 'lemon': 50, 'lilac': 290
+      };
+      const fixedHue = pastelHues[colourMode] || 0;
+      return `hsla(${fixedHue},${Math.min(s, 55)}%,${Math.max(l, 65)}%,${a})`;
+    }
+    return `hsla(${h},${s}%,${l}%,${a})`;
+  }
+
+  // ═══════════════════════════════
+  //  VISUALISER 1: Frequency Bars
+  // ═══════════════════════════════
+  function drawBars(w, h) {
+    const bars = Math.min(128, freqArray.length);
+    const barW = w / bars;
+    const baseHue = (Date.now() / 50) % 360;
+
+    for (let i = 0; i < bars; i++) {
+      const val = freqArray[i] / 255;
+      const barH = val * h * 0.85;
+      const hue = (baseHue + i * 2) % 360;
+      const lightness = lightMode ? 35 : 60;
+
+      ctx.fillStyle = hslColor(hue, 70, lightness, 0.8);
+      ctx.fillRect(i * barW, h - barH, barW - 1, barH);
+    }
+  }
+
+  // ═══════════════════════════════
+  //  VISUALISER 2: Waveform
+  // ═══════════════════════════════
+  let wfSmoothed = null;
+  function drawWaveform(w, h) {
+    const baseHue = (Date.now() / 120) % 360;
+
+    // Smooth the waveform data to reduce jitter
+    if (!wfSmoothed || wfSmoothed.length !== dataArray.length) {
+      wfSmoothed = new Float32Array(dataArray.length);
+      for (let i = 0; i < dataArray.length; i++) wfSmoothed[i] = dataArray[i];
+    } else {
+      for (let i = 0; i < dataArray.length; i++) {
+        wfSmoothed[i] += (dataArray[i] - wfSmoothed[i]) * 0.18;
+      }
+    }
+
+    // Draw multiple layered waveforms
+    const step = 3;
+    for (let layer = 0; layer < 3; layer++) {
+      ctx.beginPath();
+      const sliceW = w / (dataArray.length / step);
+      const offset = layer * 0.1;
+      const hue = (baseHue + layer * 40) % 360;
+      const lightness = lightMode ? 40 : 65;
+      ctx.strokeStyle = hslColor(hue, 60, lightness, 0.6 - layer * 0.15);
+      ctx.lineWidth = 2.5 - layer * 0.5;
+
+      for (let i = 0; i < dataArray.length; i += step) {
+        const v = (wfSmoothed[i] / 128.0) - 1 + offset;
+        const y = (v * h * 0.3) + h / 2;
+        const x = (i / step) * sliceW;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+  }
+
+  // ═══════════════════════════════
+  //  VISUALISER 3: Radial
+  // ═══════════════════════════════
+  function drawRadial(w, h) {
+    const cx = w / 2;
+    const cy = h / 2;
+    const radius = Math.min(w, h) * 0.25;
+    const bars = 180;
+    const step = Math.floor(freqArray.length / bars);
+    const baseHue = (Date.now() / 60) % 360;
+    const level = getLevel();
+
+    // Glow circle
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius + 100);
+    const glowAlpha = level * 0.15;
+    grad.addColorStop(0, hslColor(baseHue, 70, lightMode ? 50 : 60, glowAlpha));
+    grad.addColorStop(1, 'transparent');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+
+    for (let i = 0; i < bars; i++) {
+      const angle = (i / bars) * Math.PI * 2 - Math.PI / 2;
+      const val = freqArray[i * step] / 255;
+      const len = val * radius * 1.2;
+      const hue = (baseHue + i * 2) % 360;
+      const lightness = lightMode ? 35 : 65;
+
+      const x1 = cx + Math.cos(angle) * (radius * 0.5);
+      const y1 = cy + Math.sin(angle) * (radius * 0.5);
+      const x2 = cx + Math.cos(angle) * (radius * 0.5 + len);
+      const y2 = cy + Math.sin(angle) * (radius * 0.5 + len);
+
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.strokeStyle = hslColor(hue, 70, lightness, 0.7);
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+  }
+
+  // ═══════════════════════════════
+  //  VISUALISER 4: Particles
+  // ═══════════════════════════════
+  function drawParticles(w, h) {
+    const level = getLevel();
+    const baseHue = (Date.now() / 50) % 360;
+
+    // Spawn particles based on audio level
+    const spawnCount = Math.floor(level * 8);
+    for (let i = 0; i < spawnCount && particles.length < MAX_PARTICLES; i++) {
+      particles.push({
+        x: Math.random() * w,
+        y: Math.random() * h,
+        vx: (Math.random() - 0.5) * (3 + level * 8),
+        vy: (Math.random() - 0.5) * (3 + level * 8),
+        life: 1,
+        decay: 0.003 + Math.random() * 0.008,
+        size: 4 + Math.random() * 8,
+        hue: (baseHue + Math.random() * 60) % 360
+      });
+    }
+
+    // Update & draw particles
+    particles = particles.filter(p => p.life > 0);
+    for (const p of particles) {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vx *= 0.99;
+      p.vy *= 0.99;
+      p.life -= p.decay;
+
+      const lightness = lightMode ? 35 : 65;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+      ctx.fillStyle = hslColor(p.hue, 70, lightness, p.life * 0.8);
+      ctx.fill();
+    }
+
+    // Draw connecting lines between close particles
+    for (let i = 0; i < particles.length; i++) {
+      for (let j = i + 1; j < particles.length; j++) {
+        const dx = particles[i].x - particles[j].x;
+        const dy = particles[i].y - particles[j].y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 150) {
+          const alpha = (1 - dist / 150) * 0.15 * Math.min(particles[i].life, particles[j].life);
+          ctx.beginPath();
+          ctx.moveTo(particles[i].x, particles[i].y);
+          ctx.lineTo(particles[j].x, particles[j].y);
+          ctx.strokeStyle = fg(alpha);
+          ctx.lineWidth = 0.5;
+          ctx.stroke();
+        }
+      }
+    }
+  }
+
+  // ═══════════════════════════════
+  //  VISUALISER 5: Mirror Bars
+  // ═══════════════════════════════
+  function drawMirrorBars(w, h) {
+    const bars = Math.min(96, freqArray.length);
+    const barW = w / bars;
+    const cy = h / 2;
+    const baseHue = (Date.now() / 60) % 360;
+
+    for (let i = 0; i < bars; i++) {
+      const val = freqArray[i] / 255;
+      const barH = val * h * 0.42;
+      const hue = (baseHue + i * 2.5) % 360;
+      const lightness = lightMode ? 35 : 60;
+
+      ctx.fillStyle = hslColor(hue, 65, lightness, 0.75);
+      // Top half
+      ctx.fillRect(i * barW, cy - barH, barW - 1, barH);
+      // Bottom half (mirror)
+      ctx.fillStyle = hslColor(hue, 65, lightness, 0.4);
+      ctx.fillRect(i * barW, cy, barW - 1, barH);
+    }
+
+    // Center line
+    ctx.beginPath();
+    ctx.moveTo(0, cy);
+    ctx.lineTo(w, cy);
+    ctx.strokeStyle = fg(0.1);
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  // ═══════════════════════════════
+  //  VISUALISER 6: Spectrum Ring
+  // ═══════════════════════════════
+  function drawSpectrumRing(w, h) {
+    const cx = w / 2;
+    const cy = h / 2;
+    const baseRadius = Math.min(w, h) * 0.2;
+    const rings = 5;
+    const baseHue = (Date.now() / 70) % 360;
+    const level = getLevel();
+
+    for (let r = 0; r < rings; r++) {
+      const ringRadius = baseRadius + r * 30;
+      const points = 128;
+      const step = Math.floor(freqArray.length / points);
+
+      ctx.beginPath();
+      for (let i = 0; i <= points; i++) {
+        const angle = (i / points) * Math.PI * 2 - Math.PI / 2;
+        const idx = (i % points) * step;
+        const val = freqArray[idx] / 255;
+        const rad = ringRadius + val * 50 * (1 - r * 0.15);
+
+        const x = cx + Math.cos(angle) * rad;
+        const y = cy + Math.sin(angle) * rad;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+
+      const hue = (baseHue + r * 30) % 360;
+      const lightness = lightMode ? 40 : 60;
+      ctx.strokeStyle = hslColor(hue, 60, lightness, 0.5 - r * 0.08);
+      ctx.lineWidth = 2 - r * 0.2;
+      ctx.stroke();
+    }
+  }
+
+  // ═══════════════════════════════
+  //  VISUALISER 7: Terrain
+  // ═══════════════════════════════
+  function drawTerrain(w, h) {
+    terrainFrameCount++;
+    // Only push a new row every 3rd frame
+    if (terrainFrameCount % 3 === 0) {
+      const snapshot = [];
+      const points = 100;
+      const step = Math.max(1, Math.floor(freqArray.length / points));
+      for (let i = 0; i < points; i++) {
+        snapshot.push(freqArray[i * step] / 255);
+      }
+      terrainHistory.unshift(snapshot);
+      if (terrainHistory.length > TERRAIN_ROWS) terrainHistory.pop();
+    }
+
+    const baseHue = (Date.now() / 80) % 360;
+    const rowH = h / (TERRAIN_ROWS + 5);
+
+    for (let r = terrainHistory.length - 1; r >= 0; r--) {
+      const row = terrainHistory[r];
+      const y0 = h * 0.3 + r * rowH;
+      const fade = 1 - r / TERRAIN_ROWS;
+
+      ctx.beginPath();
+      for (let i = 0; i <= row.length; i++) {
+        const x = (i / row.length) * w;
+        const val = row[Math.min(i, row.length - 1)];
+        const y = y0 - val * h * 0.15 * fade;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+
+      const hue = (baseHue + r * 3) % 360;
+      const lightness = lightMode ? 40 : 55;
+      ctx.strokeStyle = hslColor(hue, 50, lightness, fade * 0.6);
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+  }
+
+  // ═══════════════════════════════
+  //  VISUALISER 8: Starfield
+  // ═══════════════════════════════
+  function drawStarfield(w, h) {
+    const cx = w / 2;
+    const cy = h / 2;
+    const level = getLevel();
+    const speed = 0.002 + level * 0.06;
+    const baseHue = (Date.now() / 70) % 360;
+
+    for (const star of stars) {
+      star.z -= speed;
+      if (star.z <= 0.001) {
+        star.x = (Math.random() - 0.5) * 2;
+        star.y = (Math.random() - 0.5) * 2;
+        star.z = 1;
+      }
+
+      const sx = cx + (star.x / star.z) * cx;
+      const sy = cy + (star.y / star.z) * cy;
+      const size = (1 - star.z) * (2.5 + level * 8);
+      const alpha = (1 - star.z);
+      const hue = (baseHue + (1 - star.z) * 120) % 360;
+      const lightness = lightMode ? 35 : 70;
+
+      if (sx >= 0 && sx <= w && sy >= 0 && sy <= h) {
+        ctx.beginPath();
+        ctx.arc(sx, sy, Math.max(0.5, size), 0, Math.PI * 2);
+        ctx.fillStyle = hslColor(hue, 60, lightness, alpha * 0.9);
+        ctx.fill();
+
+        // Trail
+        const prevZ = star.z + speed;
+        const psx = cx + (star.x / prevZ) * cx;
+        const psy = cy + (star.y / prevZ) * cy;
+        ctx.beginPath();
+        ctx.moveTo(psx, psy);
+        ctx.lineTo(sx, sy);
+        ctx.strokeStyle = hslColor(hue, 60, lightness, alpha * 0.3);
+        ctx.lineWidth = Math.max(0.3, size * 0.5);
+        ctx.stroke();
+      }
+    }
+  }
+
+  // ═══════════════════════════════
+  //  VISUALISER 9: Aurora
+  // ═══════════════════════════════
+  let auroraTime = 0;
+  function drawAurora(w, h) {
+    auroraTime += 0.01;
+    const level = getLevel();
+    const baseHue = (Date.now() / 80) % 360;
+    const bands = 6;
+
+    for (let b = 0; b < bands; b++) {
+      const bandY = h * (0.2 + b * 0.12);
+      const hue = (baseHue + b * 45) % 360;
+      const lightness = lightMode ? 45 : 55;
+      const alpha = 0.15 + level * 0.25;
+
+      ctx.beginPath();
+      ctx.moveTo(0, bandY);
+
+      const points = 120;
+      for (let i = 0; i <= points; i++) {
+        const x = (i / points) * w;
+        const freqIdx = Math.floor((i / points) * freqArray.length * 0.5);
+        const freqVal = freqArray[freqIdx] / 255;
+        const wave1 = Math.sin(auroraTime * 2 + i * 0.05 + b * 1.2) * 30;
+        const wave2 = Math.sin(auroraTime * 1.3 + i * 0.03 + b * 0.8) * 20;
+        const audioDisplace = freqVal * h * 0.08;
+        const y = bandY + wave1 + wave2 - audioDisplace;
+        ctx.lineTo(x, y);
+      }
+
+      ctx.lineTo(w, h);
+      ctx.lineTo(0, h);
+      ctx.closePath();
+
+      const grad = ctx.createLinearGradient(0, bandY - 60, 0, bandY + 100);
+      grad.addColorStop(0, hslColor(hue, 70, lightness, 0));
+      grad.addColorStop(0.3, hslColor(hue, 70, lightness, alpha * 0.7));
+      grad.addColorStop(0.6, hslColor((hue + 30) % 360, 60, lightness, alpha * 0.4));
+      grad.addColorStop(1, hslColor(hue, 70, lightness, 0));
+      ctx.fillStyle = grad;
+      ctx.fill();
+    }
+
+    // Shimmer particles
+    const shimmerCount = Math.floor(level * 15) + 3;
+    for (let i = 0; i < shimmerCount; i++) {
+      const sx = Math.random() * w;
+      const sy = h * 0.15 + Math.random() * h * 0.6;
+      const size = Math.random() * 2 + 0.5;
+      const salpha = Math.random() * 0.4 * level;
+      const shue = (baseHue + Math.random() * 90) % 360;
+      ctx.beginPath();
+      ctx.arc(sx, sy, size, 0, Math.PI * 2);
+      ctx.fillStyle = hslColor(shue, 60, lightMode ? 50 : 70, salpha);
+      ctx.fill();
+    }
+  }
+
+  // ═══════════════════════════════
+  //  VISUALISER 10: Kaleidoscope
+  // ═══════════════════════════════
+  let kaleidoTime = 0;
+  function drawKaleidoscope(w, h) {
+    kaleidoTime += 0.008;
+    const cx = w / 2;
+    const cy = h / 2;
+    const level = getLevel();
+    const baseHue = (Date.now() / 100) % 360;
+    const segments = 12;
+    const angleStep = (Math.PI * 2) / segments;
+
+    ctx.save();
+    ctx.translate(cx, cy);
+
+    for (let s = 0; s < segments; s++) {
+      ctx.save();
+      ctx.rotate(s * angleStep);
+      if (s % 2 === 1) ctx.scale(1, -1);
+
+      const numShapes = 8;
+      for (let i = 0; i < numShapes; i++) {
+        const freqIdx = Math.floor((i / numShapes) * freqArray.length * 0.4);
+        const val = freqArray[freqIdx] / 255;
+        const dist = 40 + i * 35 + val * 60;
+        const size = 8 + val * 30;
+        const hue = (baseHue + i * 25 + s * 5) % 360;
+        const lightness = lightMode ? 45 : 58;
+        const alpha = 0.3 + val * 0.4;
+
+        const px = Math.cos(kaleidoTime + i * 0.5) * dist;
+        const py = Math.sin(kaleidoTime * 0.7 + i * 0.3) * dist * 0.5;
+
+        ctx.beginPath();
+        ctx.arc(px, py, size, 0, Math.PI * 2);
+        ctx.fillStyle = hslColor(hue, 65, lightness, alpha);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  // ═══════════════════════════════
+  //  VISUALISER 11: Raindrops
+  // ═══════════════════════════════
+  let raindrops = [];
+  const MAX_RAINDROPS = 40;
+  function drawRaindrops(w, h) {
+    const level = getLevel();
+    const baseHue = (Date.now() / 90) % 360;
+
+    // Spawn new drops based on audio
+    const spawnCount = level > 0.05 ? Math.floor(level * 2) + 1 : 0;
+    for (let i = 0; i < spawnCount && raindrops.length < MAX_RAINDROPS; i++) {
+      raindrops.push({
+        x: Math.random() * w,
+        y: Math.random() * h,
+        radius: 0,
+        maxRadius: 60 + Math.random() * 120 + level * 80,
+        speed: 0.3 + Math.random() * 0.6,
+        hue: (baseHue + Math.random() * 60) % 360,
+        life: 1
+      });
+    }
+
+    // Update & draw
+    raindrops = raindrops.filter(d => d.life > 0);
+    for (const d of raindrops) {
+      d.radius += d.speed;
+      d.life = 1 - (d.radius / d.maxRadius);
+      if (d.life <= 0) continue;
+
+      const lightness = lightMode ? 40 : 60;
+
+      // Multiple expanding rings per drop
+      for (let r = 0; r < 3; r++) {
+        const ringRadius = d.radius * (1 - r * 0.25);
+        if (ringRadius <= 0) continue;
+        const ringAlpha = d.life * (0.5 - r * 0.15);
+        ctx.beginPath();
+        ctx.arc(d.x, d.y, ringRadius, 0, Math.PI * 2);
+        ctx.strokeStyle = hslColor(d.hue, 50, lightness, ringAlpha);
+        ctx.lineWidth = 1.5 - r * 0.3;
+        ctx.stroke();
+      }
+    }
+  }
+
+  // ═══════════════════════════════
+  //  VISUALISER 12: Swirls
+  // ═══════════════════════════════
+  let swirlTime = 0;
+  function drawSwirls(w, h) {
+    swirlTime += 0.006;
+    const cx = w / 2;
+    const cy = h / 2;
+    const level = getLevel();
+    const baseHue = (Date.now() / 70) % 360;
+    const numSwirls = 5;
+    const pointsPerSwirl = 200;
+
+    for (let s = 0; s < numSwirls; s++) {
+      const hue = (baseHue + s * 55) % 360;
+      const lightness = lightMode ? 40 : 60;
+      const swirlOffset = s * (Math.PI * 2 / numSwirls);
+
+      ctx.beginPath();
+      for (let i = 0; i < pointsPerSwirl; i++) {
+        const t = i / pointsPerSwirl;
+        const freqIdx = Math.floor(t * freqArray.length * 0.5);
+        const val = freqArray[freqIdx] / 255;
+        const angle = swirlOffset + t * Math.PI * 6 + swirlTime * (2 + s * 0.3);
+        const dist = t * Math.min(w, h) * 0.45 + val * 40;
+        const wobble = Math.sin(swirlTime * 3 + t * 10 + s) * (10 + val * 20);
+
+        const x = cx + Math.cos(angle) * (dist + wobble);
+        const y = cy + Math.sin(angle) * (dist + wobble);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+
+      const alpha = 0.25 + level * 0.35;
+      ctx.strokeStyle = hslColor(hue, 60, lightness, alpha);
+      ctx.lineWidth = 1.5 + level * 2;
+      ctx.stroke();
+    }
+  }
+
+  // ═══════════════════════════════
+  //  VISUALISER 13: Dancing Circles
+  // ═══════════════════════════════
+  let circleTime = 0;
+  function drawDancingCircles(w, h) {
+    circleTime += 0.01;
+    const level = getLevel();
+    const baseHue = (Date.now() / 60) % 360;
+    const numCircles = 24;
+
+    for (let i = 0; i < numCircles; i++) {
+      const t = i / numCircles;
+      const freqIdx = Math.floor(t * freqArray.length * 0.6);
+      const val = freqArray[freqIdx] / 255;
+
+      // Distribute circles across the screen with gentle motion
+      const gridX = (i % 6) / 5;
+      const gridY = Math.floor(i / 6) / 3;
+      const baseX = w * 0.1 + gridX * w * 0.8;
+      const baseY = h * 0.15 + gridY * h * 0.7;
+
+      const wobbleX = Math.sin(circleTime * 1.5 + i * 0.7) * (20 + val * 30);
+      const wobbleY = Math.cos(circleTime * 1.2 + i * 0.9) * (15 + val * 25);
+
+      const x = baseX + wobbleX;
+      const y = baseY + wobbleY;
+      const radius = 15 + val * 50 + Math.sin(circleTime + i) * 10;
+      const hue = (baseHue + i * 15) % 360;
+      const lightness = lightMode ? 45 : 58;
+      const alpha = 0.15 + val * 0.45;
+
+      // Filled circle with gradient
+      const grad = ctx.createRadialGradient(x, y, 0, x, y, radius);
+      grad.addColorStop(0, hslColor(hue, 65, lightness, alpha));
+      grad.addColorStop(0.7, hslColor(hue, 65, lightness, alpha * 0.4));
+      grad.addColorStop(1, hslColor(hue, 65, lightness, 0));
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      // Outer ring
+      ctx.beginPath();
+      ctx.arc(x, y, radius * 1.2, 0, Math.PI * 2);
+      ctx.strokeStyle = hslColor(hue, 55, lightness, alpha * 0.3);
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+  }
+
+  // ═══════════════════════════════
+  //  VISUALISER 14: Fireworks
+  // ═══════════════════════════════
+  let fireworkParticles = [];
+  let fwCooldown = 0;
+  const MAX_FW_PARTICLES = 300;
+  function drawFireworks(w, h) {
+    // Fade previous frame instead of clearing — smooth trails, no flicker
+    ctx.fillStyle = lightMode ? 'rgba(245,245,245,0.15)' : 'rgba(10,10,10,0.15)';
+    ctx.fillRect(0, 0, w, h);
+
+    const level = getLevel();
+    const baseHue = (Date.now() / 120) % 360;
+    fwCooldown--;
+
+    // Launch fireworks gently
+    if (level > 0.03 && fwCooldown <= 0 && fireworkParticles.length < MAX_FW_PARTICLES - 30) {
+      const burstX = w * 0.2 + Math.random() * w * 0.6;
+      const burstY = h * 0.15 + Math.random() * h * 0.4;
+      const burstHue = (baseHue + Math.random() * 120) % 360;
+      const count = 12 + Math.floor(level * 18);
+
+      for (let i = 0; i < count; i++) {
+        const angle = (i / count) * Math.PI * 2 + Math.random() * 0.2;
+        const speed = 0.4 + Math.random() * 1.0 + level * 1.2;
+        fireworkParticles.push({
+          x: burstX,
+          y: burstY,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          life: 1,
+          decay: 0.002 + Math.random() * 0.005,
+          size: 1.5 + Math.random() * 2,
+          hue: (burstHue + Math.random() * 30) % 360,
+          gravity: 0.005 + Math.random() * 0.008
+        });
+      }
+      fwCooldown = 30 + Math.floor(Math.random() * 40);
+    }
+
+    // Update & draw particles
+    fireworkParticles = fireworkParticles.filter(p => p.life > 0);
+    for (const p of fireworkParticles) {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += p.gravity;
+      p.vx *= 0.995;
+      p.vy *= 0.995;
+      p.life -= p.decay;
+
+      const lightness = lightMode ? 45 : 65;
+      const alpha = p.life * 0.7;
+
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+      ctx.fillStyle = hslColor(p.hue, 65, lightness, alpha);
+      ctx.fill();
+    }
+  }
+
+  // ═══════════════════════════════
+  //  VISUALISER 15: Polygraph
+  // ═══════════════════════════════
+  let polyHistory = [];
+  const POLY_MAX_POINTS = 800;
+  function drawPolygraph(w, h) {
+    const level = getLevel();
+
+    // Compute RMS for speech amplitude
+    let rms = 0;
+    for (let i = 0; i < dataArray.length; i++) {
+      const v = (dataArray[i] / 128) - 1;
+      rms += v * v;
+    }
+    rms = Math.sqrt(rms / dataArray.length);
+
+    polyHistory.push(rms);
+    if (polyHistory.length > POLY_MAX_POINTS) polyHistory.shift();
+
+    const baseHue = (Date.now() / 100) % 360;
+    const lightness = lightMode ? 30 : 70;
+    const margin = 40;
+    const graphW = w - margin * 2;
+    const graphH = h * 0.6;
+    const graphY = h * 0.2;
+
+    // Grid lines
+    ctx.strokeStyle = fg(0.06);
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 8; i++) {
+      const y = graphY + (i / 8) * graphH;
+      ctx.beginPath();
+      ctx.moveTo(margin, y);
+      ctx.lineTo(w - margin, y);
+      ctx.stroke();
+    }
+    for (let i = 0; i <= 10; i++) {
+      const x = margin + (i / 10) * graphW;
+      ctx.beginPath();
+      ctx.moveTo(x, graphY);
+      ctx.lineTo(x, graphY + graphH);
+      ctx.stroke();
+    }
+
+    // Draw the polygraph line
+    if (polyHistory.length > 1) {
+      ctx.beginPath();
+      for (let i = 0; i < polyHistory.length; i++) {
+        const x = margin + (i / POLY_MAX_POINTS) * graphW;
+        const val = Math.min(polyHistory[i] * 3, 1);
+        const y = graphY + graphH - val * graphH;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = hslColor(baseHue, 50, lightness, 0.8);
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Filled area under curve
+      const lastX = margin + ((polyHistory.length - 1) / POLY_MAX_POINTS) * graphW;
+      ctx.lineTo(lastX, graphY + graphH);
+      ctx.lineTo(margin, graphY + graphH);
+      ctx.closePath();
+      ctx.fillStyle = hslColor(baseHue, 50, lightness, 0.06);
+      ctx.fill();
+    }
+
+    // Current level indicator on right
+    const curVal = Math.min(rms * 3, 1);
+    const indicatorY = graphY + graphH - curVal * graphH;
+    ctx.beginPath();
+    ctx.arc(margin + (polyHistory.length / POLY_MAX_POINTS) * graphW, indicatorY, 4 + level * 4, 0, Math.PI * 2);
+    ctx.fillStyle = hslColor(baseHue, 60, lightness, 0.9);
+    ctx.fill();
+  }
+
+  // ═══════════════════════════════
+  //  VISUALISER 16: Decibels
+  // ═══════════════════════════════
+  let dbHistory = [];
+  const DB_MAX_POINTS = 200;
+  let peakDb = -100;
+  let peakHold = 0;
+  function drawDecibels(w, h) {
+    // Calculate dB from RMS
+    let rms = 0;
+    for (let i = 0; i < dataArray.length; i++) {
+      const v = (dataArray[i] / 128) - 1;
+      rms += v * v;
+    }
+    rms = Math.sqrt(rms / dataArray.length);
+    const db = rms > 0 ? 20 * Math.log10(rms) : -100;
+    const clampedDb = Math.max(-60, Math.min(0, db));
+    const normalized = (clampedDb + 60) / 60; // 0 to 1
+
+    dbHistory.push(normalized);
+    if (dbHistory.length > DB_MAX_POINTS) dbHistory.shift();
+
+    // Peak hold
+    if (normalized > peakDb) {
+      peakDb = normalized;
+      peakHold = 60;
+    }
+    peakHold--;
+    if (peakHold <= 0) peakDb *= 0.98;
+
+    const margin = 60;
+    const meterW = w - margin * 2;
+    const meterH = 40;
+    const meterY = h * 0.35;
+
+    // Main meter background
+    ctx.fillStyle = fg(0.04);
+    ctx.beginPath();
+    ctx.roundRect(margin, meterY, meterW, meterH, 6);
+    ctx.fill();
+
+    // Meter fill with color gradient (green -> yellow -> red)
+    if (normalized > 0) {
+      const fillW = normalized * meterW;
+      const grad = ctx.createLinearGradient(margin, 0, margin + meterW, 0);
+      const gL = lightMode ? 35 : 50;
+      grad.addColorStop(0, hslColor(120, 60, gL, 0.8));
+      grad.addColorStop(0.6, hslColor(60, 70, gL, 0.8));
+      grad.addColorStop(0.85, hslColor(30, 75, gL, 0.8));
+      grad.addColorStop(1, hslColor(0, 80, gL, 0.9));
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.roundRect(margin, meterY, fillW, meterH, 6);
+      ctx.fill();
+    }
+
+    // Peak hold marker
+    const peakX = margin + peakDb * meterW;
+    ctx.fillStyle = fg(0.6);
+    ctx.fillRect(peakX - 1, meterY - 2, 2, meterH + 4);
+
+    // Scale markings
+    ctx.fillStyle = fg(0.2);
+    for (let db = -60; db <= 0; db += 10) {
+      const x = margin + ((db + 60) / 60) * meterW;
+      ctx.fillRect(x, meterY + meterH + 4, 1, 6);
+    }
+
+    // History graph below
+    const graphY = h * 0.55;
+    const graphH = h * 0.3;
+
+    // Grid
+    ctx.strokeStyle = fg(0.04);
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 6; i++) {
+      const y = graphY + (i / 6) * graphH;
+      ctx.beginPath();
+      ctx.moveTo(margin, y);
+      ctx.lineTo(w - margin, y);
+      ctx.stroke();
+    }
+
+    // History line
+    if (dbHistory.length > 1) {
+      ctx.beginPath();
+      for (let i = 0; i < dbHistory.length; i++) {
+        const x = margin + (i / DB_MAX_POINTS) * meterW;
+        const y = graphY + graphH - dbHistory[i] * graphH;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      const lightness = lightMode ? 35 : 55;
+      ctx.strokeStyle = hslColor(120, 40, lightness, 0.5);
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // Filled area
+      const lastX = margin + ((dbHistory.length - 1) / DB_MAX_POINTS) * meterW;
+      ctx.lineTo(lastX, graphY + graphH);
+      ctx.lineTo(margin, graphY + graphH);
+      ctx.closePath();
+      ctx.fillStyle = hslColor(120, 40, lightness, 0.04);
+      ctx.fill();
+    }
+  }
+
+  // ── Visualiser Picker ──
+  const visPicker = document.getElementById('visPicker');
+  const visPickerGrid = document.getElementById('visPickerGrid');
+
+  function showVisPicker() {
+    visPickerGrid.innerHTML = '';
+    // Random button (large, spans full width)
+    const randBtn = document.createElement('button');
+    randBtn.className = 'pick-item pick-random';
+    randBtn.textContent = 'random';
+    randBtn.addEventListener('click', () => {
+      currentVis = Math.floor(Math.random() * visualisers.length);
+      resetVisState();
+      startVisualiser();
+    });
+    visPickerGrid.appendChild(randBtn);
+
+    // Individual visualisers
+    visualisers.forEach((v, i) => {
+      const btn = document.createElement('button');
+      btn.className = 'pick-item';
+      btn.textContent = v.name;
+      btn.addEventListener('click', () => {
+        currentVis = i;
+        resetVisState();
+        startVisualiser();
+      });
+      visPickerGrid.appendChild(btn);
+    });
+    visPicker.classList.remove('hidden');
+  }
+
+  function startVisualiser() {
+    visPicker.classList.add('hidden');
+    if (!running) { running = true; resize(); animate(); }
+  }
+
+  // ── UI Logic ──
+
+  // Dialog buttons
+  document.getElementById('btnMic').addEventListener('click', () => initAudio('mic'));
+  document.getElementById('btnSystem').addEventListener('click', () => initAudio('system'));
+
+  // Click outside source buttons dismisses dialog when changing source mid-session
+  document.getElementById('dialog').addEventListener('click', (e) => {
+    if (e.target === document.getElementById('dialog') && changingSource && running) {
+      changingSource = false;
+      document.getElementById('dialog').classList.add('hidden');
+    }
+  });
+
+  // Options toggle
+  const optBtn = document.getElementById('optBtn');
+  const optPanel = document.getElementById('optPanel');
+
+  optBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const open = optPanel.classList.toggle('open');
+    optBtn.classList.toggle('open', open);
+  });
+
+  document.addEventListener('click', () => {
+    optPanel.classList.remove('open');
+    optBtn.classList.remove('open');
+  });
+  optPanel.addEventListener('click', (e) => e.stopPropagation());
+
+  // Fullscreen
+  document.getElementById('optFullscreen').addEventListener('click', () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen?.() ||
+      document.documentElement.webkitRequestFullscreen?.();
+    } else {
+      document.exitFullscreen?.() || document.webkitExitFullscreen?.();
+    }
+    closeOptions();
+  });
+
+  // Theme toggle
+  const themeBtn = document.getElementById('optTheme');
+  themeBtn.addEventListener('click', () => {
+    lightMode = !lightMode;
+    document.body.classList.toggle('light', lightMode);
+    themeBtn.textContent = lightMode ? 'dark mode' : 'light mode';
+    closeOptions();
+  });
+
+  // Random visualiser
+  document.getElementById('optRandom').addEventListener('click', () => {
+    currentVis = Math.floor(Math.random() * visualisers.length);
+    resetVisState();
+  });
+
+  // Next visualiser
+  document.getElementById('optNext').addEventListener('click', () => {
+    currentVis = (currentVis + 1) % visualisers.length;
+    resetVisState();
+  });
+
+  // Menu button
+  document.getElementById('optMenu').addEventListener('click', () => {
+    openMenu();
+    closeOptions();
+  });
+
+  // Change source
+  document.getElementById('optSource').addEventListener('click', () => {
+    changingSource = true;
+    document.getElementById('dialog').classList.remove('hidden');
+    closeOptions();
+  });
+
+  // Share
+  document.getElementById('optShare').addEventListener('click', () => {
+    if (navigator.share) {
+      navigator.share({ title: 'visualiser', url: window.location.href }).catch(() => {});
+    } else {
+      navigator.clipboard.writeText(window.location.href).then(() => {
+        const btn = document.getElementById('optShare');
+        btn.textContent = 'link copied';
+        setTimeout(() => { btn.textContent = 'share'; }, 1500);
+      });
+    }
+  });
+
+  function closeOptions() {
+    optPanel.classList.remove('open');
+    optBtn.classList.remove('open');
+  }
+
+  // ── Colour Picker ──
+  const colourOverlay = document.getElementById('colourOverlay');
+  const colourGrid = document.getElementById('colourGrid');
+
+  const colourOptions = [
+    { id: 'rainbow', swatch: 'conic-gradient(#f88, #ff8, #8f8, #8ff, #88f, #f8f, #f88)' },
+    { id: 'rose', swatch: '#f2b5c8' },
+    { id: 'peach', swatch: '#f5c5a3' },
+    { id: 'lavender', swatch: '#c8a8e9' },
+    { id: 'mint', swatch: '#a8e6cf' },
+    { id: 'sky', swatch: '#a8d4e6' },
+    { id: 'lemon', swatch: '#f0e68c' },
+    { id: 'lilac', swatch: '#d4a8e6' },
+    { id: 'monochrome', swatch: 'linear-gradient(135deg, #fff, #888, #333)' },
+  ];
+
+  function openColourPicker() {
+    colourGrid.innerHTML = '';
+    colourOptions.forEach(opt => {
+      const btn = document.createElement('button');
+      btn.className = 'colour-option' + (colourMode === opt.id ? ' active' : '');
+      btn.setAttribute('aria-label', opt.id);
+      const swatch = document.createElement('span');
+      swatch.className = 'colour-swatch';
+      swatch.style.background = opt.swatch;
+      btn.appendChild(swatch);
+      btn.addEventListener('click', () => {
+        colourMode = opt.id;
+        colourOverlay.classList.remove('open');
+      });
+      colourGrid.appendChild(btn);
+    });
+    colourOverlay.classList.add('open');
+  }
+
+  document.getElementById('colourClose').addEventListener('click', () => colourOverlay.classList.remove('open'));
+  colourOverlay.addEventListener('click', (e) => {
+    if (e.target === colourOverlay) colourOverlay.classList.remove('open');
+  });
+
+  document.getElementById('optColour').addEventListener('click', () => {
+    openColourPicker();
+    closeOptions();
+  });
+
+  // ── Visualiser Menu ──
+  const menuOverlay = document.getElementById('menuOverlay');
+  const menuGrid = document.getElementById('menuGrid');
+
+  function openMenu() {
+    menuGrid.innerHTML = '';
+    // Random button
+    const randBtn = document.createElement('button');
+    randBtn.className = 'menu-item';
+    randBtn.textContent = 'random';
+    randBtn.style.gridColumn = '1 / -1';
+    randBtn.style.aspectRatio = 'auto';
+    randBtn.style.padding = '16px';
+    randBtn.addEventListener('click', () => {
+      currentVis = Math.floor(Math.random() * visualisers.length);
+      resetVisState();
+      closeMenu();
+    });
+    menuGrid.appendChild(randBtn);
+
+    visualisers.forEach((v, i) => {
+      const btn = document.createElement('button');
+      btn.className = 'menu-item' + (i === currentVis ? ' active' : '');
+      btn.textContent = v.name;
+      btn.addEventListener('click', () => {
+        currentVis = i;
+        resetVisState();
+        closeMenu();
+      });
+      menuGrid.appendChild(btn);
+    });
+    menuOverlay.classList.add('open');
+  }
+
+  function closeMenu() {
+    menuOverlay.classList.remove('open');
+  }
+
+  document.getElementById('menuClose').addEventListener('click', closeMenu);
+  menuOverlay.addEventListener('click', (e) => {
+    if (e.target === menuOverlay) closeMenu();
+  });
+
+  function resetVisState() {
+    particles = [];
+    wfSmoothed = null;
+    terrainHistory = [];
+    terrainFrameCount = 0;
+    initStars();
+    auroraTime = 0;
+    kaleidoTime = 0;
+    raindrops = [];
+    swirlTime = 0;
+    circleTime = 0;
+    fireworkParticles = [];
+    fwCooldown = 0;
+    polyHistory = [];
+    dbHistory = [];
+    peakDb = -100;
+    peakHold = 0;
+  }
+
+  // ── Idle auto-hide ──
+  let windowHasMouse = false;
+  document.addEventListener('mouseenter', () => { windowHasMouse = true; });
+  document.addEventListener('mouseleave', () => { windowHasMouse = false; });
+
+  function resetIdle() {
+    if (controlsHidden) {
+      document.body.classList.remove('controls-hidden');
+      controlsHidden = false;
+    }
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      if (running && !optPanel.classList.contains('open') && !menuOverlay.classList.contains('open') && !colourOverlay.classList.contains('open')) {
+        document.body.classList.add('controls-hidden');
+        controlsHidden = true;
+      }
+    }, 2600);
+  }
+
+  const cursorEl = document.getElementById('cursor');
+  document.addEventListener('mousemove', (e) => {
+    cursorEl.style.left = e.clientX + 'px';
+    cursorEl.style.top = e.clientY + 'px';
+    cursorEl.style.display = 'block';
+    if (windowHasMouse) resetIdle();
+  });
+  document.addEventListener('mouseleave', () => { cursorEl.style.display = 'none'; });
+  document.addEventListener('touchstart', resetIdle, { passive: true });
+  resetIdle();
+
+  // ── Keyboard shortcuts ──
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'f' || e.key === 'F') {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen?.();
+      } else {
+        document.exitFullscreen?.();
+      }
+    }
+    if (e.key === 'ArrowRight' || e.key === 'n' || e.key === 'N') {
+      currentVis = (currentVis + 1) % visualisers.length;
+      resetVisState();
+    }
+    if (e.key === 'ArrowLeft' || e.key === 'p' || e.key === 'P') {
+      currentVis = (currentVis - 1 + visualisers.length) % visualisers.length;
+      resetVisState();
+    }
+    if (e.key === 'Escape') {
+      closeMenu();
+      colourOverlay.classList.remove('open');
+    }
+    if (e.key === 'm' || e.key === 'M') {
+      if (menuOverlay.classList.contains('open')) closeMenu();
+      else openMenu();
+    }
+  });
+
+  // ── Swipe support for mobile ──
+  let touchStartX = 0;
+  document.addEventListener('touchstart', (e) => {
+    if (menuOverlay.classList.contains('open') || colourOverlay.classList.contains('open')) return;
+    touchStartX = e.touches[0].clientX;
+  }, { passive: true });
+
+  document.addEventListener('touchend', (e) => {
+    if (menuOverlay.classList.contains('open') || colourOverlay.classList.contains('open')) return;
+    const dx = e.changedTouches[0].clientX - touchStartX;
+    if (Math.abs(dx) > 60) {
+      if (dx < 0) {
+        currentVis = (currentVis + 1) % visualisers.length;
+      } else {
+        currentVis = (currentVis - 1 + visualisers.length) % visualisers.length;
+      }
+      resetVisState();
+    }
+  }, { passive: true });
+
+  // Initial resize
+  resize();
+})();
+</script>
+</body>
+</html>
