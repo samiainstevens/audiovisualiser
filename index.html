@@ -38,6 +38,7 @@
     display: block;
     width: 100%; height: 100%;
     position: fixed; top: 0; left: 0;
+    touch-action: none;
   }
 
   /* Options toggle button */
@@ -676,6 +677,7 @@
   let starfieldMouseFollow = false;
   let starfieldTouchDragging = false;
   let starfieldTouchPointerId = null;
+  let starfieldTouchIdentifier = null;
   let starfieldReturnActive = false;
   let starfieldReturnStart = 0;
   let starfieldReturnFromX = 0;
@@ -718,9 +720,13 @@
 
   function stopStarfieldTouchDrag(pointerId = null) {
     if (!starfieldTouchDragging) return;
-    if (pointerId !== null && pointerId !== starfieldTouchPointerId) return;
+    if (pointerId !== null) {
+      if (starfieldTouchPointerId === null) return;
+      if (pointerId !== starfieldTouchPointerId) return;
+    }
     starfieldTouchDragging = false;
     starfieldTouchPointerId = null;
+    starfieldTouchIdentifier = null;
     beginStarfieldReturn();
   }
 
@@ -2660,9 +2666,63 @@
     starfieldMouseFollow = false;
     starfieldTouchDragging = true;
     starfieldTouchPointerId = e.pointerId;
+    starfieldTouchIdentifier = null;
     setStarfieldOriginFromClient(e.clientX, e.clientY);
     canvas.setPointerCapture?.(e.pointerId);
   });
+
+  // Mobile touch fallback for starfield drag, avoids pointer-cancel interruptions.
+  canvas.addEventListener('touchstart', (e) => {
+    const mode = visualisers[currentVis].name;
+    if (mode !== 'starfield') return;
+    if (!e.touches.length) return;
+    const t = e.touches[0];
+    if (!canUseCanvasInteraction(t.clientX, t.clientY)) return;
+    starfieldMouseFollow = false;
+    starfieldTouchDragging = true;
+    starfieldTouchIdentifier = t.identifier;
+    setStarfieldOriginFromClient(t.clientX, t.clientY);
+    suppressSwipeForTouchGesture = true;
+    if (e.cancelable) e.preventDefault();
+  }, { passive: false });
+
+  canvas.addEventListener('touchmove', (e) => {
+    const mode = visualisers[currentVis].name;
+    if (mode !== 'starfield' || !starfieldTouchDragging || starfieldTouchIdentifier === null) return;
+    let tracked = null;
+    for (let i = 0; i < e.touches.length; i++) {
+      const t = e.touches[i];
+      if (t.identifier === starfieldTouchIdentifier) {
+        tracked = t;
+        break;
+      }
+    }
+    if (!tracked) return;
+    setStarfieldOriginFromClient(tracked.clientX, tracked.clientY);
+    activatePointerField(tracked.clientX, tracked.clientY);
+    if (e.cancelable) e.preventDefault();
+  }, { passive: false });
+
+  function endStarfieldTouchByIdentifier(touchList) {
+    if (!starfieldTouchDragging || starfieldTouchIdentifier === null) return false;
+    for (let i = 0; i < touchList.length; i++) {
+      if (touchList[i].identifier === starfieldTouchIdentifier) {
+        starfieldTouchDragging = false;
+        starfieldTouchPointerId = null;
+        starfieldTouchIdentifier = null;
+        beginStarfieldReturn();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  canvas.addEventListener('touchend', (e) => {
+    endStarfieldTouchByIdentifier(e.changedTouches);
+  }, { passive: true });
+  canvas.addEventListener('touchcancel', (e) => {
+    endStarfieldTouchByIdentifier(e.changedTouches);
+  }, { passive: true });
 
   canvas.addEventListener('pointermove', (e) => {
     const mode = visualisers[currentVis].name;
@@ -2678,14 +2738,15 @@
       }
       return;
     }
-    if (pointerField.touchPointerId !== e.pointerId) return;
+    const starfieldPointerDrag = mode === 'starfield' && starfieldTouchDragging;
+    if (pointerField.touchPointerId !== e.pointerId && !starfieldPointerDrag) return;
     if (!canUseCanvasInteraction(e.clientX, e.clientY)) {
       clearPointerField(e.pointerId);
       return;
     }
     activatePointerField(e.clientX, e.clientY);
 
-    if (mode === 'starfield' && starfieldTouchDragging && e.pointerId === starfieldTouchPointerId) {
+    if (mode === 'starfield' && starfieldTouchDragging && (starfieldTouchPointerId === null || e.pointerId === starfieldTouchPointerId)) {
       setStarfieldOriginFromClient(e.clientX, e.clientY);
     }
   });
@@ -2695,6 +2756,7 @@
     if (e.pointerType !== 'mouse') {
       clearPointerField(e.pointerId);
       if (mode === 'starfield') {
+        if (starfieldTouchIdentifier !== null) return;
         stopStarfieldTouchDrag(e.pointerId);
         canvas.releasePointerCapture?.(e.pointerId);
       }
@@ -2702,6 +2764,7 @@
   });
   canvas.addEventListener('pointercancel', (e) => {
     clearPointerField(e.pointerId);
+    if (starfieldTouchIdentifier !== null) return;
     stopStarfieldTouchDrag(e.pointerId);
     canvas.releasePointerCapture?.(e.pointerId);
   });
@@ -2710,6 +2773,7 @@
       pointerField.active = false;
     } else {
       clearPointerField(e.pointerId);
+      if (starfieldTouchIdentifier !== null) return;
       stopStarfieldTouchDrag(e.pointerId);
       canvas.releasePointerCapture?.(e.pointerId);
     }
@@ -3001,6 +3065,7 @@
     starfieldMouseFollow = false;
     starfieldTouchDragging = false;
     starfieldTouchPointerId = null;
+    starfieldTouchIdentifier = null;
     starfieldReturnActive = false;
     starfieldReturnStart = 0;
     starfieldReturnFromX = 0;
@@ -3094,6 +3159,8 @@
     starfieldMouseFollow = false;
     starfieldTouchDragging = false;
     starfieldTouchPointerId = null;
+    starfieldTouchIdentifier = null;
+    suppressSwipeForTouchGesture = false;
   }
 
   document.addEventListener('visibilitychange', () => {
@@ -3141,14 +3208,32 @@
   });
 
   // ── Swipe support for mobile ──
+  const MAX_SWIPE_GESTURE_MS = 500;
   let touchStartX = 0;
+  let touchStartTime = 0;
+  let suppressSwipeForTouchGesture = false;
   document.addEventListener('touchstart', (e) => {
     if (menuOverlay.classList.contains('open') || colourOverlay.classList.contains('open')) return;
+    if (e.touches.length !== 1) {
+      touchStartTime = 0;
+      return;
+    }
     touchStartX = e.touches[0].clientX;
+    touchStartTime = performance.now();
   }, { passive: true });
 
   document.addEventListener('touchend', (e) => {
+    endStarfieldTouchByIdentifier(e.changedTouches);
     if (menuOverlay.classList.contains('open') || colourOverlay.classList.contains('open')) return;
+    if (suppressSwipeForTouchGesture) {
+      suppressSwipeForTouchGesture = false;
+      touchStartTime = 0;
+      return;
+    }
+    if (!touchStartTime) return;
+    const elapsed = performance.now() - touchStartTime;
+    touchStartTime = 0;
+    if (elapsed > MAX_SWIPE_GESTURE_MS) return;
     const dx = e.changedTouches[0].clientX - touchStartX;
     if (Math.abs(dx) > 60) {
       if (dx < 0) {
@@ -3158,6 +3243,14 @@
       }
       resetVisState();
     }
+  }, { passive: true });
+  document.addEventListener('touchcancel', () => {
+    // Ensure any in-progress starfield touch drag is cleared even if canvas misses the cancel.
+    starfieldTouchDragging = false;
+    starfieldTouchPointerId = null;
+    starfieldTouchIdentifier = null;
+    touchStartTime = 0;
+    suppressSwipeForTouchGesture = false;
   }, { passive: true });
 
   // Initial resize
