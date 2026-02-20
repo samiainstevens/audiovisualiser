@@ -1647,13 +1647,19 @@
   }
 
   const cursorEl = document.getElementById('cursor');
-  document.addEventListener('mousemove', (e) => {
-    cursorEl.style.left = e.clientX + 'px';
-    cursorEl.style.top = e.clientY + 'px';
-    cursorEl.style.display = 'block';
-    if (windowHasMouse) resetIdle();
-  });
-  document.addEventListener('mouseleave', () => { cursorEl.style.display = 'none'; });
+  // Hide custom cursor on touchscreens
+  const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+  if (isTouch) {
+    cursorEl.style.display = 'none';
+  } else {
+    document.addEventListener('mousemove', (e) => {
+      cursorEl.style.left = e.clientX + 'px';
+      cursorEl.style.top = e.clientY + 'px';
+      cursorEl.style.display = 'block';
+      if (windowHasMouse) resetIdle();
+    });
+    document.addEventListener('mouseleave', () => { cursorEl.style.display = 'none'; });
+  }
   document.addEventListener('touchstart', resetIdle, { passive: true });
   resetIdle();
 
