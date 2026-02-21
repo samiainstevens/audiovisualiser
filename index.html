@@ -232,6 +232,13 @@
     color: var(--fg);
     opacity: 0.45;
   }
+  .src-note.safari-note,
+  .src-note.firefox-note {
+    display: none;
+    max-width: 140px;
+  }
+  .is-safari .src-note.safari-note { display: block; }
+  .is-firefox .src-note.firefox-note { display: block; }
   @media (pointer: coarse) {
     .src-note.mobile-only { display: block; }
   }
@@ -570,7 +577,8 @@
     </div>
     <div class="src-option">
       <button class="src-btn" id="btnSystem">device sound</button>
-      <span class="src-note mobile-only">may not work on mobile devices</span>
+      <span class="src-note safari-note">may not work on safari please try chrome or opera</span>
+      <span class="src-note firefox-note">may not work on firefox please try chrome or opera</span>
     </div>
   </div>
   <div id="sensitivityControl" aria-label="sensitivity control">
@@ -600,6 +608,21 @@
 <script>
 (() => {
   'use strict';
+
+  const ua = navigator.userAgent || '';
+  const vendor = navigator.vendor || '';
+  const isFirefox = /Firefox|FxiOS/i.test(ua);
+  const isSafari = /Safari/i.test(ua)
+    && /Apple Computer/i.test(vendor)
+    && !/CriOS|Chrome|Chromium|EdgiOS|Edg|OPiOS|OPR|FxiOS|Firefox/i.test(ua);
+  const isChromium = /Chrome|CriOS|Chromium/i.test(ua);
+  const isEdge = /EdgiOS|Edg/i.test(ua);
+  const isOpera = /OPiOS|OPR/i.test(ua);
+  const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(ua);
+  const isDesktopChrome = isChromium && !isEdge && !isOpera && !isMobile;
+  if (isSafari) document.documentElement.classList.add('is-safari');
+  if (isFirefox) document.documentElement.classList.add('is-firefox');
+  if (isDesktopChrome) document.documentElement.classList.add('is-desktop-chrome');
 
   // ── State ──
   const canvas = document.getElementById('c');
@@ -2657,7 +2680,12 @@
 
   // Dialog buttons
   document.getElementById('btnMic').addEventListener('click', () => initAudio('mic'));
-  document.getElementById('btnSystem').addEventListener('click', () => initAudio('system'));
+  document.getElementById('btnSystem').addEventListener('click', () => {
+    if (isDesktopChrome) {
+      alert("select 'entire screen' and enable 'share system audio' when prompted");
+    }
+    initAudio('system');
+  });
 
   // Click outside source buttons dismisses dialog when changing source mid-session
   dialogEl.addEventListener('click', (e) => {
